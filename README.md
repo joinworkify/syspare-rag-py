@@ -45,6 +45,8 @@ From the repo root:
 uv init
 uv add google-cloud-aiplatform pymupdf rich colorama pandas pillow numpy
 uv sync
+
+brew install tesseract
 ```
 
 ---
@@ -91,15 +93,38 @@ gcloud services enable aiplatform.googleapis.com
 ## 4) Project structure
 
 ```text
-multi-rag-syspare/
-  main.py
-  intro_multimodal_rag_utils.py
-  data/
-    your_pdf_1.pdf
-    your_pdf_2.pdf
-  images/
-  README.md
-  pyproject.toml
+syspare-rag-python/
+├── README.md
+├── __pycache__
+│   ├── multimodal_rag_pipeline.cpython-312.pyc
+│   ├── pipeline.cpython-312.pyc
+│   ├── rag_server.cpython-312.pyc
+│   └── utils.cpython-312.pyc
+├── cache_ym358a
+│   ├── image_metadata_df.csv
+│   ├── image_metadata_df.pkl
+│   ├── images
+│   │   ├── ym358a-service-manual-pdf-split-ocr.pdf_image_0_0_16.jpeg
+│   │   ├── ym358a-service-manual-pdf-split-ocr.pdf_image_10_0_68.jpeg
+│   │   ├── ym358a-service-manual-pdf-split-ocr.pdf_image_1_0_23.jpeg
+│   │   ├── ym358a-service-manual-pdf-split-ocr.pdf_image_2_0_28.jpeg
+│   │   ├── ym358a-service-manual-pdf-split-ocr.pdf_image_3_0_33.jpeg
+│   │   ├── ym358a-service-manual-pdf-split-ocr.pdf_image_4_0_38.jpeg
+│   │   ├── ym358a-service-manual-pdf-split-ocr.pdf_image_5_0_43.jpeg
+│   │   ├── ym358a-service-manual-pdf-split-ocr.pdf_image_6_0_48.jpeg
+│   │   ├── ym358a-service-manual-pdf-split-ocr.pdf_image_7_0_53.jpeg
+│   │   ├── ym358a-service-manual-pdf-split-ocr.pdf_image_8_0_58.jpeg
+│   │   └── ym358a-service-manual-pdf-split-ocr.pdf_image_9_0_63.jpeg
+│   ├── text_metadata_df.csv
+│   └── text_metadata_df.pkl
+├── data
+│   └── ym358a-service-manual-pdf-split-ocr.pdf
+├── main.py
+├── pipeline.py
+├── pyproject.toml
+├── rag_server.py
+├── utils.py
+└── uv.lock
 ```
 
 ---
@@ -107,7 +132,7 @@ multi-rag-syspare/
 ## 5) Run
 
 ```bash
-uv run python main.py
+uvicorn rag_server:app --reload --port 8000
 ```
 
 ---

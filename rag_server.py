@@ -52,15 +52,18 @@ cfg = RagConfig(
 
 rag = MultimodalRAGPipeline(cfg)
 
-# Build metadata (or load from cache) ON STARTUP
-# NOTE: This runs once at server start.
-rag.build_metadata(
-    pdf_folder_path=PDF_FOLDER,
-    cache_dir=CACHE_DIR,
-    force_rebuild=False,
-    generation_config=GenerationConfig(temperature=0.2),
-    ocr_fallback=True,
-)
+# Check if metadata is already loaded or cached
+if not rag.text_metadata_df or not rag.image_metadata_df:
+    print("Metadata not loaded. Building metadata...")
+    rag.build_metadata(
+        pdf_folder_path=PDF_FOLDER,
+        cache_dir=CACHE_DIR,
+        force_rebuild=False,
+        generation_config=GenerationConfig(temperature=0.2),
+        ocr_fallback=True,
+    )
+else:
+    print("Metadata already loaded. Skipping build.")
 
 
 # -----------------------------
@@ -228,10 +231,10 @@ PAGE = Template(
 def home():
     html = PAGE.render(
         ran=False,
-        q="YM358A transmission type and number of forward/reverse gears",
+        q="Every 2 years what should we do for the safety precuations of YM358A tractor?",
         top_k_text=5,
         top_k_img=6,
-        temp=0.2,
+        temp=0.5,
         answer="",
         texts=[],
         images=[],
@@ -245,7 +248,7 @@ def query(
     q: str = Form(...),
     top_k_text: int = Form(5),
     top_k_img: int = Form(6),
-    temp: float = Form(0.2),
+    temp: float = Form(0.5),
 ):
     # 1) Retrieve text + images (no need to print citations; we display results directly)
     text_matches = rag.search_text(q, top_n=top_k_text, chunk_text=True)
