@@ -2,7 +2,6 @@
 boto3
 colorama
 fastapi
-fitz
 google-cloud-aiplatform
 jinja2
 pandas
