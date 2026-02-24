@@ -3,7 +3,10 @@ import os
 import time
 from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 
-from IPython.display import display
+try:
+    from IPython.display import display
+except ImportError:
+    display = lambda x: None  # no-op when not in Jupyter (e.g. on Render)
 import PIL
 import fitz
 import numpy as np
