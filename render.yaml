@@ -1,0 +1,21 @@
+# Render Blueprint: https://render.com/docs/infrastructure-as-code
+# Connect the repo in Render Dashboard and use this for one-click deploy.
+
+services:
+  - type: web
+    name: syspare-rag-py
+    runtime: python
+
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn rag_server:app --workers 1 --worker-class uvicorn.workers.UvicornWorker --bind 0.0.0.0:$PORT
+
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.0"
+      # Set these in Render Dashboard → Environment (or as secret files):
+      # - PDF_FOLDER (default: ./data/)
+      # - CACHE_DIR (default: ./cache_ym358a)
+      # - IMAGE_DIR (default: ./cache_ym358a/images)
+      # - PROJECT_ID (Google Cloud project for Vertex AI)
+      # - LOCATION (e.g. us-central1)
+      # - GOOGLE_APPLICATION_CREDENTIALS (path to service account JSON, or use Render secret file)

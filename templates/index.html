@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Multimodal RAG Viewer</title>
+  <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+  <style type="text/tailwindcss">
+    @theme {
+      --font-sans: "DM Sans", ui-sans-serif, system-ui, sans-serif;
+    }
+  </style>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&display=swap" rel="stylesheet" />
+</head>
+<body class="min-h-screen bg-slate-50 text-slate-800 font-sans antialiased">
+  <div class="max-w-6xl mx-auto px-4 sm:px-6 py-8">
+    <!-- Header -->
+    <header class="mb-8">
+      <h1 class="text-2xl font-semibold text-slate-900 tracking-tight">Multimodal RAG Viewer</h1>
+      <p class="mt-1 text-sm text-slate-500">Query → retrieve text & images → Gemini answer</p>
+    </header>
+
+    <!-- Search card -->
+    <section class="bg-white rounded-xl border border-slate-200 shadow-sm p-6 mb-8">
+      <form method="post" action="/query" class="space-y-4">
+        <div>
+          <label for="q" class="block text-sm font-medium text-slate-700 mb-1.5">Your question</label>
+          <input
+            id="q"
+            name="q"
+            type="text"
+            value="{{ q|e }}"
+            placeholder="Ask something about the documents..."
+            class="w-full px-4 py-3 rounded-lg border border-slate-300 focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 outline-none transition text-slate-900 placeholder-slate-400"
+          />
+        </div>
+        <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+          <div>
+            <label for="top_k_text" class="block text-sm font-medium text-slate-600 mb-1">Top-K text</label>
+            <input id="top_k_text" name="top_k_text" type="number" value="{{ top_k_text }}" min="1" max="20"
+              class="w-full px-3 py-2 rounded-lg border border-slate-300 focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 outline-none transition text-slate-900" />
+          </div>
+          <div>
+            <label for="top_k_img" class="block text-sm font-medium text-slate-600 mb-1">Top-K images</label>
+            <input id="top_k_img" name="top_k_img" type="number" value="{{ top_k_img }}" min="1" max="20"
+              class="w-full px-3 py-2 rounded-lg border border-slate-300 focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 outline-none transition text-slate-900" />
+          </div>
+          <div>
+            <label for="temp" class="block text-sm font-medium text-slate-600 mb-1">Temperature</label>
+            <input id="temp" name="temp" type="number" value="{{ temp }}" min="0" max="2" step="0.1"
+              class="w-full px-3 py-2 rounded-lg border border-slate-300 focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 outline-none transition text-slate-900" />
+          </div>
+        </div>
+        <div class="pt-1 flex flex-wrap items-center gap-3">
+          <button type="submit"
+            class="inline-flex items-center px-5 py-2.5 rounded-lg bg-emerald-600 text-white font-medium hover:bg-emerald-700 focus:ring-2 focus:ring-emerald-500 focus:ring-offset-2 transition">
+            Run RAG
+          </button>
+        </div>
+      </form>
+
+      <!-- Action buttons: cache & S3 -->
+      <div class="mt-6 pt-6 border-t border-slate-200">
+        <p class="text-sm font-medium text-slate-700 mb-2">Cache & S3</p>
+        <div class="flex flex-wrap gap-2">
+          <button type="button" id="btn-clean-cache"
+            class="inline-flex items-center px-4 py-2 rounded-lg bg-slate-200 text-slate-700 text-sm font-medium hover:bg-slate-300 focus:ring-2 focus:ring-slate-400 focus:ring-offset-2 transition">
+            Clean cache
+          </button>
+          <button type="button" id="btn-build-cache"
+            class="inline-flex items-center px-4 py-2 rounded-lg bg-amber-500 text-white text-sm font-medium hover:bg-amber-600 focus:ring-2 focus:ring-amber-500 focus:ring-offset-2 transition">
+            Build cache & upload to S3
+          </button>
+          <button type="button" id="btn-sync-s3"
+            class="inline-flex items-center px-4 py-2 rounded-lg bg-sky-500 text-white text-sm font-medium hover:bg-sky-600 focus:ring-2 focus:ring-sky-500 focus:ring-offset-2 transition">
+            Upload to S3
+          </button>
+        </div>
+        <p id="action-status" class="mt-2 text-sm text-slate-500 min-h-[1.5rem]"></p>
+      </div>
+    </section>
+
+    {% if ran %}
+    <!-- Results -->
+    <div class="grid grid-cols-1 xl:grid-cols-5 gap-6 mb-8">
+      <!-- Answer -->
+      <div class="xl:col-span-3 bg-white rounded-xl border border-slate-200 shadow-sm p-6">
+        <h2 class="text-lg font-semibold text-slate-900 mb-3">Gemini Answer</h2>
+        <div class="prose prose-slate max-w-none text-slate-700 leading-relaxed whitespace-pre-wrap break-words">{{ answer }}</div>
+      </div>
+
+      <!-- Images -->
+      <div class="xl:col-span-2 bg-white rounded-xl border border-slate-200 shadow-sm p-6">
+        <h2 class="text-lg font-semibold text-slate-900 mb-3">Retrieved Images</h2>
+        <p class="text-xs text-slate-500 mb-2">Click an image to view larger</p>
+        <div class="grid grid-cols-2 gap-3" id="rag-images">
+          {% for img in images %}
+          <button type="button" class="rag-image-thumb text-left rounded-lg border border-slate-200 overflow-hidden bg-slate-50 hover:ring-2 hover:ring-emerald-500/50 hover:border-emerald-400 transition cursor-pointer focus:outline-none focus:ring-2 focus:ring-emerald-500"
+            data-src="{{ img.img_url }}"
+            data-caption="{{ img.caption|e }}"
+            data-doc="{{ img.doc|e if img.doc else '' }}"
+            data-page="{{ img.page|e if img.page else '' }}">
+            <img src="{{ img.img_url }}" alt="" class="w-full aspect-auto object-cover pointer-events-none" loading="lazy" />
+            <div class="p-2 space-y-1">
+              <div class="flex flex-wrap gap-1.5">
+                {% if img.doc %}<span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-slate-200 text-slate-700">{{ img.doc }}</span>{% endif %}
+                {% if img.page %}<span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-slate-200 text-slate-700">p{{ img.page }}</span>{% endif %}
+                {% if img.score is not none %}<span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-emerald-100 text-emerald-800">{{ "%.3f"|format(img.score) }}</span>{% endif %}
+              </div>
+              <p class="text-xs text-slate-500 overflow-hidden text-left" style="display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;">{{ img.caption }}</p>
+            </div>
+          </button>
+          {% endfor %}
+        </div>
+      </div>
+    </div>
+
+    <!-- Image lightbox dialog -->
+    <div id="image-lightbox" class="fixed inset-0 z-50 hidden" role="dialog" aria-modal="true" aria-label="View image">
+      <div class="absolute inset-0 bg-black/80 backdrop-blur-sm" id="lightbox-backdrop"></div>
+      <div class="absolute inset-0 flex items-center justify-center p-4">
+        <div class="relative max-w-[90vw] max-h-[90vh] flex flex-col items-center">
+          <button type="button" id="lightbox-close" class="absolute -top-10 right-0 flex items-center justify-center w-9 h-9 rounded-full bg-white/10 hover:bg-white/20 text-white transition z-10" aria-label="Close">
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+          </button>
+          <img id="lightbox-img" src="" alt="" class="max-w-full max-h-[85vh] w-auto h-auto object-contain rounded-lg shadow-2xl" />
+          <div id="lightbox-caption" class="mt-3 px-4 py-2 max-w-2xl rounded-lg bg-white/95 text-slate-700 text-sm text-center"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Text chunks -->
+    <section class="bg-white rounded-xl border border-slate-200 shadow-sm p-6">
+      <h2 class="text-lg font-semibold text-slate-900 mb-4">Retrieved Text Chunks</h2>
+      <div class="space-y-4">
+        {% for t in texts %}
+        <div class="border-b border-slate-100 last:border-0 pb-4 last:pb-0">
+          <div class="flex flex-wrap gap-2 mb-2">
+            {% if t.doc %}<span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-slate-200 text-slate-700">{{ t.doc }}</span>{% endif %}
+            {% if t.page %}<span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-slate-200 text-slate-700">p{{ t.page }}</span>{% endif %}
+            {% if t.score is not none %}<span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-emerald-100 text-emerald-800">{{ "%.3f"|format(t.score) }}</span>{% endif %}
+          </div>
+          <p class="text-sm text-slate-600 leading-relaxed whitespace-pre-wrap break-words">{{ t.chunk_text }}</p>
+        </div>
+        {% endfor %}
+      </div>
+    </section>
+    {% endif %}
+  </div>
+
+  <script>
+    (function () {
+      var statusEl = document.getElementById('action-status');
+      function setStatus(msg, isError) {
+        if (!statusEl) return;
+        statusEl.textContent = msg || '';
+        statusEl.style.color = isError ? '#b91c1c' : '#64748b';
+      }
+      function postAction(url, btn) {
+        if (btn) { btn.disabled = true; btn.classList.add('opacity-70'); }
+        setStatus('Running…');
+        fetch(url, { method: 'POST', headers: { 'Accept': 'application/json' } })
+          .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, data: d }; }); })
+          .then(function (_) {
+            var d = _.data;
+            setStatus(_.ok ? (d.message || 'Done.') : (d.error || 'Failed.'), !_.ok);
+            var counts = d.uploaded || d.s3_uploaded;
+            if (_.ok && counts) setStatus((d.message || 'Done.') + ' (cache: ' + (counts.cache || 0) + ', PDFs: ' + (counts.pdfs || 0) + ')', false);
+          })
+          .catch(function (e) { setStatus('Error: ' + e.message, true); })
+          .finally(function () {
+            if (btn) { btn.disabled = false; btn.classList.remove('opacity-70'); }
+          });
+      }
+      document.getElementById('btn-clean-cache')?.addEventListener('click', function () { postAction('/api/clean-cache', this); });
+      document.getElementById('btn-build-cache')?.addEventListener('click', function () { postAction('/api/build-cache', this); });
+      document.getElementById('btn-sync-s3')?.addEventListener('click', function () { postAction('/api/sync-to-s3', this); });
+    })();
+    (function () {
+      var lightbox = document.getElementById('image-lightbox');
+      if (!lightbox) return;
+      var img = document.getElementById('lightbox-img');
+      var captionEl = document.getElementById('lightbox-caption');
+      var closeBtn = document.getElementById('lightbox-close');
+      var backdrop = document.getElementById('lightbox-backdrop');
+
+      function openLightbox(src, caption, doc, page) {
+        img.src = src;
+        img.alt = caption || 'Retrieved image';
+        var parts = [];
+        if (doc) parts.push(doc);
+        if (page) parts.push('p' + page);
+        if (caption) parts.push(caption);
+        captionEl.textContent = parts.join(' · ');
+        captionEl.style.display = parts.length ? 'block' : 'none';
+        lightbox.classList.remove('hidden');
+        document.body.style.overflow = 'hidden';
+      }
+
+      function closeLightbox() {
+        lightbox.classList.add('hidden');
+        document.body.style.overflow = '';
+      }
+
+      document.getElementById('rag-images')?.addEventListener('click', function (e) {
+        var btn = e.target.closest('.rag-image-thumb');
+        if (!btn) return;
+        e.preventDefault();
+        openLightbox(btn.dataset.src, btn.dataset.caption || '', btn.dataset.doc || '', btn.dataset.page || '');
+      });
+      closeBtn.addEventListener('click', closeLightbox);
+      backdrop.addEventListener('click', closeLightbox);
+      document.addEventListener('keydown', function (e) {
+        if (e.key === 'Escape' && !lightbox.classList.contains('hidden')) closeLightbox();
+      });
+    })();
+  </script>
+</body>
+</html>

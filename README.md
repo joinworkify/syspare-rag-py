@@ -137,6 +137,57 @@ uvicorn rag_server:app --reload --port 8000
 
 ---
 
+## Deploy on Render
+
+The Python FastAPI app can be deployed on [Render](https://render.com) using the repo’s `render.yaml` and `requirements.txt`.
+
+1. **Connect the repo** in the Render Dashboard and create a new Web Service (or use the Blueprint from `render.yaml`).
+
+2. **Environment variables** (Dashboard → Environment):
+   - `PROJECT_ID` — Google Cloud project ID (Vertex AI).
+   - `LOCATION` — e.g. `us-central1`.
+   - Optional: `PDF_FOLDER`, `CACHE_DIR`, `IMAGE_DIR` (defaults: `./data/`, `./cache_ym358a`, `./cache_ym358a/images`).
+
+3. **Google Cloud auth** — Use a [service account](https://cloud.google.com/iam/docs/service-accounts) and set `GOOGLE_APPLICATION_CREDENTIALS` to the path of the JSON key file. On Render, add the key as a **Secret File** and set `GOOGLE_APPLICATION_CREDENTIALS` to that path (e.g. `/etc/secrets/gcp-key.json`).
+
+4. **Data and cache** — Render’s filesystem is ephemeral. Either:
+   - Use **AWS S3** (see below), or
+   - Commit a pre-built `cache_ym358a/` (and optionally `data/`) into the repo, or
+   - Use a [Render Persistent Disk](https://render.com/docs/disks) and set `CACHE_DIR` / `PDF_FOLDER` to paths on the disk.
+
+5. **Health check** — Use `GET /health` for Render’s health check URL.
+
+---
+
+## AWS S3 storage (cache + PDFs)
+
+Cache and PDFs can be stored in an S3 bucket so they persist across deploys and are shared across instances.
+
+**S3 layout** (prefix `rag-data` by default):
+
+- `rag-data/pdfs/` — uploaded PDFs (synced to local `PDF_FOLDER` at startup).
+- `rag-data/cache/` — RAG cache (metadata + extracted images; synced to local `CACHE_DIR`).
+
+**Environment variables** (set in Render or `.env`; never commit real keys):
+
+| Variable | Description |
+|----------|-------------|
+| `AWS_ACCESS_KEY_ID` | AWS access key |
+| `AWS_SECRET_ACCESS_KEY` | AWS secret key |
+| `AWS_DEFAULT_REGION` | e.g. `us-east-2` |
+| `S3_BUCKET_NAME` | Bucket name (e.g. `syspare-vercel`) |
+| `S3_RAG_PREFIX` | Optional; default `rag-data` |
+
+**Behavior:**
+
+- On startup, if S3 is configured, the app downloads `rag-data/pdfs/` and `rag-data/cache/` into local `PDF_FOLDER` and `CACHE_DIR`.
+- After building metadata (when cache was missing), the app uploads the local cache (and PDFs) back to S3.
+- **Upload PDF via API:** `POST /api/upload-pdf` with `multipart/form-data` and a PDF file. The file is saved locally and uploaded to `rag-data/pdfs/`. Restart or run a new query (with cache cleared) to re-index.
+
+**Security:** If your AWS keys were ever pasted in chat or committed, rotate them in the AWS IAM console and update the env vars.
+
+---
+
 ## 6) Quick Vertex AI smoke test
 
 Create `test_vertex.py`:

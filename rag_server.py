@@ -1,33 +1,61 @@
 # rag_server.py
 import os
+import shutil
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-
-from fastapi import FastAPI, Form, Request
-from fastapi.responses import HTMLResponse
+from dotenv import load_dotenv
+from fastapi import FastAPI, File, Form, Request, UploadFile
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from jinja2 import Template
+from jinja2 import Environment, FileSystemLoader
 
 from vertexai.generative_models import GenerationConfig
 
 from pipeline import RagConfig, MultimodalRAGPipeline
 
+load_dotenv()
+
+try:
+    from s3_storage import (
+        download_cache_from_s3,
+        download_pdfs_from_s3,
+        is_s3_configured,
+        upload_cache_to_s3,
+        upload_pdf_file_to_s3,
+        upload_pdfs_to_s3,
+    )
+except ImportError:
+    is_s3_configured = lambda: False
+    download_pdfs_from_s3 = lambda _: 0
+    download_cache_from_s3 = lambda _: 0
+    upload_cache_to_s3 = lambda _: 0
+    upload_pdfs_to_s3 = lambda _: 0
+    upload_pdf_file_to_s3 = lambda *a, **k: False
+
 
 # -----------------------------
-# CONFIG (edit these)
+# CONFIG (env for Render; fallback for local)
 # -----------------------------
-PDF_FOLDER = "./data/"
-CACHE_DIR = "./cache_ym358a"
-IMAGE_DIR = "./cache_ym358a/images"  # must match RagConfig.image_save_dir
+def _env(key: str, default: str) -> str:
+    return os.environ.get(key, default).strip()
 
-PROJECT_ID = "fortunaii"
-LOCATION = "us-central1"
+
+PDF_FOLDER = _env("PDF_FOLDER", "./data/")
+CACHE_DIR = _env("CACHE_DIR", "./cache_ym358a")
+IMAGE_DIR = _env("IMAGE_DIR", "./cache_ym358a/images")  # must match RagConfig.image_save_dir
+
+PROJECT_ID = _env("PROJECT_ID", "fortunaii")
+LOCATION = _env("LOCATION", "us-central1")
 
 
 # -----------------------------
 # FastAPI setup
 # -----------------------------
-app = FastAPI(title="Multimodal RAG Browser UI")
+app = FastAPI(title="Syspare RAG Python")
+
+# Templates (HTML in templates/)
+TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
+jinja_env = Environment(loader=FileSystemLoader(str(TEMPLATES_DIR)), autoescape=True)
 
 # Serve images folder in browser as /static/...
 Path(IMAGE_DIR).mkdir(parents=True, exist_ok=True)
@@ -35,35 +63,89 @@ app.mount("/static", StaticFiles(directory=IMAGE_DIR), name="static")
 
 
 # -----------------------------
-# Initialize pipeline once
+# Initialize pipeline once (lazy on first use if init fails)
 # -----------------------------
-cfg = RagConfig(
-    project_id=PROJECT_ID,
-    location=LOCATION,
-    model_name="gemini-2.0-flash",
-    embedding_size=1408,
-    embedding_model_name="multimodalembedding@001",
-    image_save_dir=IMAGE_DIR,
-    enable_ocr_fallback=True,
-    ocr_min_chars=40,
-    ocr_dpi=200,
-    ocr_lang="eng",
-)
+_rag: Optional[MultimodalRAGPipeline] = None
+_rag_error: Optional[str] = None
 
-rag = MultimodalRAGPipeline(cfg)
 
-# Check if metadata is already loaded or cached
-if not rag.text_metadata_df or not rag.image_metadata_df:
-    print("Metadata not loaded. Building metadata...")
-    rag.build_metadata(
-        pdf_folder_path=PDF_FOLDER,
-        cache_dir=CACHE_DIR,
-        force_rebuild=False,
-        generation_config=GenerationConfig(temperature=0.2),
-        ocr_fallback=True,
-    )
-else:
-    print("Metadata already loaded. Skipping build.")
+def _sync_from_s3() -> None:
+    """Pull PDFs and cache from S3 into local dirs (if S3 configured)."""
+    if not is_s3_configured():
+        return
+    Path(PDF_FOLDER).mkdir(parents=True, exist_ok=True)
+    Path(CACHE_DIR).mkdir(parents=True, exist_ok=True)
+    n_pdfs = download_pdfs_from_s3(PDF_FOLDER)
+    n_cache = download_cache_from_s3(CACHE_DIR)
+    if n_pdfs or n_cache:
+        print(f"S3 sync: downloaded {n_pdfs} PDF(s), {n_cache} cache file(s).")
+
+
+def _sync_to_s3() -> Dict[str, int]:
+    """Push cache (and PDFs) to S3 (if S3 configured). Returns counts."""
+    if not is_s3_configured():
+        return {"cache": 0, "pdfs": 0}
+    n_cache = upload_cache_to_s3(CACHE_DIR)
+    n_pdfs = upload_pdfs_to_s3(PDF_FOLDER)
+    if n_cache or n_pdfs:
+        print(f"S3 sync: uploaded {n_cache} cache file(s), {n_pdfs} PDF(s).")
+    return {"cache": n_cache, "pdfs": n_pdfs}
+
+
+def _clear_rag_state() -> None:
+    """Reset in-memory RAG so next request will load or rebuild."""
+    global _rag, _rag_error
+    _rag = None
+    _rag_error = None
+
+
+def _get_rag() -> MultimodalRAGPipeline:
+    global _rag, _rag_error
+    if _rag is not None:
+        return _rag
+    if _rag_error:
+        raise RuntimeError(_rag_error)
+    try:
+        _sync_from_s3()
+        cfg = RagConfig(
+            project_id=PROJECT_ID,
+            location=LOCATION,
+            model_name="gemini-2.0-flash",
+            embedding_size=1408,
+            embedding_model_name="multimodalembedding@001",
+            image_save_dir=IMAGE_DIR,
+            enable_ocr_fallback=True,
+            ocr_min_chars=40,
+            ocr_dpi=200,
+            ocr_lang="eng",
+        )
+        rag_instance = MultimodalRAGPipeline(cfg)
+        if not rag_instance.text_metadata_df or not rag_instance.image_metadata_df:
+            print("Metadata not loaded. Building metadata...")
+            rag_instance.build_metadata(
+                pdf_folder_path=PDF_FOLDER,
+                cache_dir=CACHE_DIR,
+                force_rebuild=False,
+                generation_config=GenerationConfig(temperature=0.2),
+                ocr_fallback=True,
+            )
+            _sync_to_s3()
+        else:
+            print("Metadata already loaded. Skipping build.")
+        _rag = rag_instance
+        return _rag
+    except Exception as e:
+        _rag_error = str(e)
+        raise RuntimeError(_rag_error)
+
+
+@app.on_event("startup")
+def _ensure_rag():
+    """Optionally init pipeline at startup (fails gracefully)."""
+    try:
+        _get_rag()
+    except Exception as e:
+        print(f"RAG not ready at startup: {e}")
 
 
 # -----------------------------
@@ -122,114 +204,118 @@ def _normalize_text_matches(
 
 
 # -----------------------------
-# HTML template (single-file)
+# Template render helper
 # -----------------------------
-PAGE = Template(
-    r"""
-<!doctype html>
-<html>
-<head>
-  <meta charset="utf-8" />
-  <title>Multimodal RAG Viewer</title>
-  <style>
-    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial; margin: 24px; }
-    .row { display: flex; gap: 18px; }
-    .card { border: 1px solid #ddd; border-radius: 12px; padding: 14px; background: #fff; }
-    .left { flex: 1.2; }
-    .right { flex: 1; }
-    textarea, input { width: 100%; padding: 10px; border-radius: 10px; border: 1px solid #ccc; }
-    button { padding: 10px 14px; border-radius: 10px; border: 0; background: #111; color: #fff; cursor: pointer; }
-    pre { white-space: pre-wrap; word-break: break-word; }
-    .muted { color: #666; font-size: 13px; }
-    .imggrid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
-    .imgitem img { width: 100%; border-radius: 10px; border: 1px solid #eee; }
-    .chunk { margin-bottom: 12px; padding-bottom: 12px; border-bottom: 1px dashed #ddd; }
-    .answer { font-size: 15px; line-height: 1.45; }
-    .pill { display: inline-block; padding: 2px 8px; border-radius: 999px; border: 1px solid #ddd; font-size: 12px; margin-right: 6px; }
-  </style>
-</head>
-
-<body>
-  <h2>Multimodal RAG Viewer</h2>
-  <div class="muted">Query → retrieve text/images → Gemini answer</div>
-
-  <div class="card" style="margin-top: 16px;">
-    <form method="post" action="/query">
-      <label class="muted">Your question</label>
-      <input name="q" value="{{ q|e }}" placeholder="Ask something..." />
-
-      <div class="row" style="margin-top: 10px;width: 100%;">
-        <div style="flex:1;">
-          <label class="muted">Top-K text</label>
-          <input name="top_k_text" value="{{ top_k_text }}" />
-        </div>
-        <div style="flex:1;">
-          <label class="muted">Top-K images</label>
-          <input name="top_k_img" value="{{ top_k_img }}" />
-        </div>
-        <div style="flex:1;">
-          <label class="muted">Temperature</label>
-          <input name="temp" value="{{ temp }}" />
-        </div>
-      </div>
-
-      <div style="margin-top: 12px;">
-        <button type="submit">Run RAG</button>
-      </div>
-    </form>
-  </div>
-
-  {% if ran %}
-  <div class="row" style="margin-top: 18px;">
-    <div class="card left">
-      <h3>Gemini Answer</h3>
-      <div class="answer"><pre>{{ answer }}</pre></div>
-    </div>
-
-    <div class="card right">
-      <h3>Retrieved Images</h3>
-      <div class="imggrid">
-        {% for img in images %}
-          <div class="imgitem">
-            <img src="{{ img.img_url }}" />
-            <div class="muted" style="margin-top:6px;">
-              {% if img.doc %}<span class="pill">{{ img.doc }}</span>{% endif %}
-              {% if img.page %}<span class="pill">p{{ img.page }}</span>{% endif %}
-              {% if img.score is not none %}<span class="pill">score {{ "%.3f"|format(img.score) }}</span>{% endif %}
-            </div>
-            <div class="muted"><pre>{{ img.caption }}</pre></div>
-          </div>
-        {% endfor %}
-      </div>
-    </div>
-  </div>
-
-  <div class="card" style="margin-top: 18px;">
-    <h3>Retrieved Text Chunks</h3>
-    {% for t in texts %}
-      <div class="chunk">
-        <div class="muted">
-          {% if t.doc %}<span class="pill">{{ t.doc }}</span>{% endif %}
-          {% if t.page %}<span class="pill">p{{ t.page }}</span>{% endif %}
-          {% if t.score is not none %}<span class="pill">score {{ "%.3f"|format(t.score) }}</span>{% endif %}
-        </div>
-        <pre>{{ t.chunk_text }}</pre>
-      </div>
-    {% endfor %}
-  </div>
-  {% endif %}
-</body>
-</html>
-"""
-)
+def _render_page(**kwargs: Any) -> str:
+    tpl = jinja_env.get_template("index.html")
+    return tpl.render(**kwargs)
 
 
 # -----------------------------
 # Routes
 # -----------------------------
+@app.get("/health")
+def health():
+    """For Render (and other platforms) health checks."""
+    return {"status": "ok"}
+
+
+@app.post("/api/upload-pdf")
+async def upload_pdf(file: UploadFile = File(...)):
+    """Upload a PDF: save to local PDF_FOLDER and to S3 (if configured)."""
+    if not file.filename or not file.filename.lower().endswith(".pdf"):
+        return JSONResponse(
+            {"ok": False, "error": "Only PDF files allowed"},
+            status_code=400,
+        )
+    Path(PDF_FOLDER).mkdir(parents=True, exist_ok=True)
+    dest = Path(PDF_FOLDER) / file.filename
+    try:
+        content = await file.read()
+        dest.write_bytes(content)
+    except Exception as e:
+        return JSONResponse(
+            {"ok": False, "error": str(e)},
+            status_code=500,
+        )
+    if is_s3_configured():
+        upload_pdf_file_to_s3(str(dest))
+    return JSONResponse({"ok": True, "filename": file.filename})
+
+
+@app.post("/api/clean-cache")
+def api_clean_cache():
+    """Delete local cache files and reset RAG. Next query will rebuild from PDFs (or S3)."""
+    global _rag, _rag_error
+    cache_path = Path(CACHE_DIR)
+    if cache_path.exists():
+        shutil.rmtree(cache_path)
+    cache_path.mkdir(parents=True, exist_ok=True)
+    Path(IMAGE_DIR).mkdir(parents=True, exist_ok=True)
+    _clear_rag_state()
+    return JSONResponse({"ok": True, "message": "Local cache cleared. Run a query or Build cache to rebuild."})
+
+
+@app.post("/api/build-cache")
+def api_build_cache():
+    """Force rebuild metadata from PDFs and upload cache + PDFs to S3."""
+    global _rag, _rag_error
+    _clear_rag_state()
+    try:
+        _sync_from_s3()
+        cfg = RagConfig(
+            project_id=PROJECT_ID,
+            location=LOCATION,
+            model_name="gemini-2.0-flash",
+            embedding_size=1408,
+            embedding_model_name="multimodalembedding@001",
+            image_save_dir=IMAGE_DIR,
+            enable_ocr_fallback=True,
+            ocr_min_chars=40,
+            ocr_dpi=200,
+            ocr_lang="eng",
+        )
+        rag_instance = MultimodalRAGPipeline(cfg)
+        rag_instance.build_metadata(
+            pdf_folder_path=PDF_FOLDER,
+            cache_dir=CACHE_DIR,
+            force_rebuild=True,
+            generation_config=GenerationConfig(temperature=0.2),
+            ocr_fallback=True,
+        )
+        counts = _sync_to_s3()
+        _rag = rag_instance
+        return JSONResponse({
+            "ok": True,
+            "message": "Cache rebuilt and synced to S3.",
+            "s3_uploaded": counts,
+        })
+    except Exception as e:
+        return JSONResponse(
+            {"ok": False, "error": str(e)},
+            status_code=500,
+        )
+
+
+@app.post("/api/sync-to-s3")
+def api_sync_to_s3():
+    """Upload current local cache and PDFs to S3."""
+    counts = _sync_to_s3()
+    if not is_s3_configured():
+        return JSONResponse(
+            {"ok": False, "error": "S3 not configured. Set AWS_* and S3_BUCKET_NAME."},
+            status_code=400,
+        )
+    return JSONResponse({
+        "ok": True,
+        "message": f"Uploaded {counts['cache']} cache file(s), {counts['pdfs']} PDF(s) to S3.",
+        "uploaded": counts,
+    })
+
+
 @app.get("/", response_class=HTMLResponse)
 def home():
-    html = PAGE.render(
+    html = _render_page(
         ran=False,
         q="Every 2 years what should we do for the safety precuations of YM358A tractor?",
         top_k_text=5,
@@ -250,14 +336,26 @@ def query(
     top_k_img: int = Form(6),
     temp: float = Form(0.5),
 ):
+    try:
+        rag = _get_rag()
+    except RuntimeError as e:
+        html = _render_page(
+            ran=True,
+            q=q,
+            top_k_text=top_k_text,
+            top_k_img=top_k_img,
+            temp=temp,
+            answer=f"RAG not available: {e}\n\nSet PROJECT_ID, LOCATION, GOOGLE_APPLICATION_CREDENTIALS in Render and ensure data/cache exist.",
+            texts=[],
+            images=[],
+        )
+        return HTMLResponse(html)
+
     # 1) Retrieve text + images (no need to print citations; we display results directly)
     text_matches = rag.search_text(q, top_n=top_k_text, chunk_text=True)
     image_matches = rag.search_images_by_description_text(q, top_n=top_k_img)
 
     # 2) Build a multimodal prompt and ask Gemini (NON-streaming for clean UI)
-    #    We'll reuse your rag.answer_multimodal_query but set stream=False
-    #    (If your get_gemini_response always streams, we can implement direct generate_content,
-    #     but usually stream=False returns the full text.)
     out = rag.answer_multimodal_query(
         q,
         top_n_text=top_k_text,
@@ -268,11 +366,10 @@ def query(
     )
 
     answer = out["response"]
-    # Some utils return a rich object; ensure string
     if not isinstance(answer, str):
         answer = str(answer)
 
-    html = PAGE.render(
+    html = _render_page(
         ran=True,
         q=q,
         top_k_text=top_k_text,
