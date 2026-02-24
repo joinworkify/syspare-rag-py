@@ -17,3 +17,5 @@ wheels/
 web
 .specstory
 .vscode
+
+rag-service-account.json

@@ -90,6 +90,58 @@ gcloud services enable aiplatform.googleapis.com
 
 ---
 
+## 3b) Service account & GOOGLE_APPLICATION_CREDENTIALS (optional)
+
+Use this when you want to authenticate with a **JSON key file** (e.g. on Render, or without `gcloud` on your machine).
+
+### Step 1: Create a service account in Google Cloud
+
+1. Open [Google Cloud Console](https://console.cloud.google.com/) and select your project (e.g. `fortunaii`).
+2. Go to **IAM & Admin** → **Service Accounts** (or search “Service accounts” in the top bar).
+3. Click **+ Create Service Account**.
+4. **Service account name:** e.g. `rag-vertex-ai`.
+5. Click **Create and Continue**.
+6. **Grant access (optional):** add role **Vertex AI User** (or “Vertex AI Administrator” if you need full access). Click **Continue** → **Done**.
+
+### Step 2: Create and download the JSON key
+
+1. On the Service accounts list, click the service account you just created.
+2. Open the **Keys** tab.
+3. Click **Add key** → **Create new key** → choose **JSON** → **Create**.
+4. A JSON file downloads. **Keep it secret** (never commit it to git). Example name: `your-project-abc123.json`.
+
+### Step 3: Use it locally
+
+1. Move the file somewhere safe, e.g.:
+   ```bash
+   mkdir -p ~/.config/gcloud
+   mv ~/Downloads/your-project-abc123.json ~/.config/gcloud/rag-service-account.json
+   ```
+2. In your project, set the path in `.env`:
+   ```bash
+   GOOGLE_APPLICATION_CREDENTIALS=/Users/yourusername/.config/gcloud/rag-service-account.json
+   ```
+   Or export in the shell before running:
+   ```bash
+   export GOOGLE_APPLICATION_CREDENTIALS=~/.config/gcloud/rag-service-account.json
+   uvicorn rag_server:app --reload --port 8000
+   ```
+
+### Step 4: Use it on Render
+
+1. In Render Dashboard → your Web Service → **Environment**.
+2. Add a **Secret File**:
+   - **Key:** `GOOGLE_APPLICATION_CREDENTIALS`
+   - **Filename:** path the app will read, e.g. `/etc/secrets/gcp-key.json`
+   - **Contents:** paste the **entire contents** of your service account JSON file.
+3. Save. Render writes that content to `/etc/secrets/gcp-key.json` at runtime, so the app finds the key at that path.
+
+If you use **Environment** only (no Secret File), add a variable:
+- **Key:** `GOOGLE_APPLICATION_CREDENTIALS`
+- **Value:** `/etc/secrets/gcp-key.json` (only if you also added the Secret File with that filename above).
+
+---
+
 ## 4) Project structure
 
 ```text
