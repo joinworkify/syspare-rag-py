@@ -14,7 +14,7 @@ from pydantic import BaseModel
 
 from vertexai.generative_models import GenerationConfig
 
-from pipeline import RagConfig, MultimodalRAGPipeline
+from new_pipeline import Pipeline
 
 load_dotenv()
 
@@ -44,8 +44,8 @@ def _env(key: str, default: str) -> str:
 
 
 PDF_FOLDER = _env("PDF_FOLDER", "./data/")
-CACHE_DIR = _env("CACHE_DIR", "./cache_ym358a")
-IMAGE_DIR = _env("IMAGE_DIR", "./cache_ym358a/images")  # must match RagConfig.image_save_dir
+CACHE_DIR = _env("CACHE_DIR", "./cache")
+IMAGE_DIR = _env("IMAGE_DIR", "./cache/images")  # must match RagConfig.image_save_dir
 
 PROJECT_ID = _env("PROJECT_ID", "fortunaii")
 LOCATION = _env("LOCATION", "us-central1")
@@ -79,7 +79,7 @@ app.mount("/static", StaticFiles(directory=IMAGE_DIR), name="static")
 # -----------------------------
 # Initialize pipeline once (lazy on first use if init fails)
 # -----------------------------
-_rag: Optional[MultimodalRAGPipeline] = None
+_rag: Optional[Pipeline] = None
 _rag_error: Optional[str] = None
 
 
@@ -113,7 +113,7 @@ def _clear_rag_state() -> None:
     _rag_error = None
 
 
-def _get_rag() -> MultimodalRAGPipeline:
+def _get_rag() -> Pipeline:
     global _rag, _rag_error
     if _rag is not None:
         return _rag
@@ -121,31 +121,22 @@ def _get_rag() -> MultimodalRAGPipeline:
         raise RuntimeError(_rag_error)
     try:
         _sync_from_s3()
-        cfg = RagConfig(
-            project_id=PROJECT_ID,
-            location=LOCATION,
-            model_name="gemini-2.0-flash",
-            embedding_size=1408,
-            embedding_model_name="multimodalembedding@001",
-            image_save_dir=IMAGE_DIR,
-            enable_ocr_fallback=True,
-            ocr_min_chars=40,
-            ocr_dpi=200,
-            ocr_lang="eng",
-        )
-        rag_instance = MultimodalRAGPipeline(cfg)
-        if not rag_instance.text_metadata_df or not rag_instance.image_metadata_df:
+        rag_instance = Pipeline()
+        try:
+            # Try to load existing cache first
+            rag_instance.load_cache(cache_dir=CACHE_DIR)
+            print("Metadata cache loaded from disk.")
+        except Exception:
             print("Metadata not loaded. Building metadata...")
             rag_instance.build_metadata(
                 pdf_folder_path=PDF_FOLDER,
                 cache_dir=CACHE_DIR,
-                force_rebuild=False,
+                force_rebuild=True,
                 generation_config=GenerationConfig(temperature=0.2),
                 ocr_fallback=True,
+                image_save_dir=IMAGE_DIR,
             )
             _sync_to_s3()
-        else:
-            print("Metadata already loaded. Skipping build.")
         _rag = rag_instance
         return _rag
     except Exception as e:
@@ -168,11 +159,19 @@ def _ensure_rag():
 def _safe_image_url(img_path: str) -> str:
     """
     Convert absolute/relative img_path to URL under /static/.
-    This assumes img_path is inside IMAGE_DIR.
+    This assumes img_path is inside IMAGE_DIR (possibly in subdirectories).
     """
     p = Path(img_path)
-    # If stored path is absolute, just use filename
-    return f"/static/{p.name}"
+    root = Path(IMAGE_DIR).resolve()
+
+    try:
+        # Prefer path relative to IMAGE_DIR so subdirectories are preserved
+        rel = p.resolve().relative_to(root)
+    except Exception:
+        # Fallback: just use the basename
+        rel = p.name
+
+    return f"/static/{rel.as_posix()}"
 
 
 def _normalize_image_matches(
@@ -246,6 +245,23 @@ class QueryResponse(BaseModel):
     answer: str
     texts: List[TextChunk]
     images: List[ImageMatch]
+
+
+class QueryWithOptionalImageRequest(BaseModel):
+    """
+    JSON API request that mirrors the notebook's
+    `test_question_with_optional_input_image` helper:
+    - Always has a text question
+    - Optionally provides an image path that will be used for
+      image-embedding-based retrieval instead of description-text search.
+    """
+
+    question: str
+    image_query_path: Optional[str] = None
+    top_k_text: int = 5
+    top_k_img: int = 1
+    temp: float = 0.2
+    embedding_size: int = 128
 
 
 # -----------------------------
@@ -326,25 +342,14 @@ def api_build_cache():
     _clear_rag_state()
     try:
         _sync_from_s3()
-        cfg = RagConfig(
-            project_id=PROJECT_ID,
-            location=LOCATION,
-            model_name="gemini-2.0-flash",
-            embedding_size=1408,
-            embedding_model_name="multimodalembedding@001",
-            image_save_dir=IMAGE_DIR,
-            enable_ocr_fallback=True,
-            ocr_min_chars=40,
-            ocr_dpi=200,
-            ocr_lang="eng",
-        )
-        rag_instance = MultimodalRAGPipeline(cfg)
+        rag_instance = Pipeline()
         rag_instance.build_metadata(
             pdf_folder_path=PDF_FOLDER,
             cache_dir=CACHE_DIR,
             force_rebuild=True,
             generation_config=GenerationConfig(temperature=0.2),
             ocr_fallback=True,
+            image_save_dir=IMAGE_DIR,
         )
         counts = _sync_to_s3()
         _rag = rag_instance
@@ -420,6 +425,78 @@ def api_query(payload: QueryRequest):
     answer = out["response"]
     if not isinstance(answer, str):
         answer = str(answer)
+
+    texts_norm = _normalize_text_matches(text_matches)
+    images_norm = _normalize_image_matches(image_matches)
+
+    return QueryResponse(
+        answer=answer,
+        texts=[TextChunk(**t) for t in texts_norm],
+        images=[ImageMatch(**img) for img in images_norm],
+    )
+
+
+@app.post("/api/query-with-image", response_model=QueryResponse)
+def api_query_with_optional_image(payload: QueryWithOptionalImageRequest):
+    """
+    JSON RAG endpoint that mirrors the notebook helper
+    `test_question_with_optional_input_image`.
+
+    Request body:
+      {
+        "question": "...",
+        "image_query_path": "./out_images/ym358a/page_011/page_011_img_01_crop_01.png" | null,
+        "top_k_text": 5,
+        "top_k_img": 1,
+        "temp": 0.2,
+        "embedding_size": 128
+      }
+    """
+    try:
+        rag = _get_rag()
+    except RuntimeError as e:
+        return JSONResponse(
+            {
+                "detail": f"RAG not available: {e}. "
+                "Check PROJECT_ID / LOCATION / GOOGLE_APPLICATION_CREDENTIALS and data/cache.",
+            },
+            status_code=503,
+        )
+
+    # Text-side answer: same as notebook's `answer_text_query`
+    text_result = rag.answer_text_query(
+        payload.question,
+        top_n=payload.top_k_text,
+        temperature=payload.temp,
+        stream=False,
+    )
+    answer = text_result.get("response", "")
+    if not isinstance(answer, str):
+        answer = str(answer)
+
+    # Text retrieval (for UI context list)
+    text_matches = rag.search_text(
+        payload.question,
+        top_n=payload.top_k_text,
+        chunk_text=True,
+    )
+
+    # Image retrieval:
+    #  - if image_query_path is provided -> use image-embedding search
+    #  - else -> use description-text search (same as /api/query)
+    if payload.image_query_path:
+        image_matches = rag.search_images_by_image_embedding(
+            payload.question,
+            image_query_path=payload.image_query_path,
+            top_n=payload.top_k_img,
+            embedding_size=payload.embedding_size,
+        )
+    else:
+        image_matches = rag.search_images_by_description_text(
+            payload.question,
+            top_n=payload.top_k_img,
+            embedding_size=payload.embedding_size,
+        )
 
     texts_norm = _normalize_text_matches(text_matches)
     images_norm = _normalize_image_matches(image_matches)
