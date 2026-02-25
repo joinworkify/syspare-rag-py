@@ -50,6 +50,9 @@ IMAGE_DIR = _env("IMAGE_DIR", "./cache/images")  # must match RagConfig.image_sa
 PROJECT_ID = _env("PROJECT_ID", "fortunaii")
 LOCATION = _env("LOCATION", "us-central1")
 
+# Allow disabling S3 sync for local/dev (set DISABLE_S3_SYNC=1).
+DISABLE_S3_SYNC = _env("DISABLE_S3_SYNC", "0")
+
 
 # -----------------------------
 # FastAPI setup
@@ -85,6 +88,8 @@ _rag_error: Optional[str] = None
 
 def _sync_from_s3() -> None:
     """Pull PDFs and cache from S3 into local dirs (if S3 configured)."""
+    if DISABLE_S3_SYNC == "1":
+        return
     if not is_s3_configured():
         return
     Path(PDF_FOLDER).mkdir(parents=True, exist_ok=True)
@@ -97,6 +102,8 @@ def _sync_from_s3() -> None:
 
 def _sync_to_s3() -> Dict[str, int]:
     """Push cache (and PDFs) to S3 (if S3 configured). Returns counts."""
+    if DISABLE_S3_SYNC == "1":
+        return {"cache": 0, "pdfs": 0}
     if not is_s3_configured():
         return {"cache": 0, "pdfs": 0}
     n_cache = upload_cache_to_s3(CACHE_DIR)
