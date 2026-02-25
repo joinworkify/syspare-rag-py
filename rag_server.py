@@ -3,11 +3,14 @@ import os
 import shutil
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, Form, Request, UploadFile
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from jinja2 import Environment, FileSystemLoader
+from pydantic import BaseModel
 
 from vertexai.generative_models import GenerationConfig
 
@@ -52,6 +55,17 @@ LOCATION = _env("LOCATION", "us-central1")
 # FastAPI setup
 # -----------------------------
 app = FastAPI(title="Syspare RAG Python")
+
+# CORS: allow TSX/viewer on different origin (e.g. localhost:5173 or your frontend)
+_cors_origins = _env("CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173").strip()
+_cors_list = [o.strip() for o in _cors_origins.split(",") if o.strip()]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_cors_list,
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["*"],
+)
 
 # Templates (HTML in templates/)
 TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
@@ -204,6 +218,37 @@ def _normalize_text_matches(
 
 
 # -----------------------------
+# API models (JSON RAG API)
+# -----------------------------
+class TextChunk(BaseModel):
+    chunk_text: str
+    score: Optional[float] = None
+    page: Optional[int] = None
+    doc: Optional[str] = None
+
+
+class ImageMatch(BaseModel):
+    img_url: str
+    caption: str
+    score: Optional[float] = None
+    page: Optional[int] = None
+    doc: Optional[str] = None
+
+
+class QueryRequest(BaseModel):
+    question: str
+    top_k_text: int = 5
+    top_k_img: int = 6
+    temp: float = 0.5
+
+
+class QueryResponse(BaseModel):
+    answer: str
+    texts: List[TextChunk]
+    images: List[ImageMatch]
+
+
+# -----------------------------
 # Template render helper
 # -----------------------------
 def _render_page(**kwargs: Any) -> str:
@@ -218,6 +263,24 @@ def _render_page(**kwargs: Any) -> str:
 def health():
     """For Render (and other platforms) health checks."""
     return {"status": "ok"}
+
+
+@app.get("/app", response_class=HTMLResponse)
+def app_page():
+    """API-driven RAG viewer (same UI as index.html, uses POST /api/query)."""
+    path = TEMPLATES_DIR / "app.html"
+    if not path.exists():
+        return HTMLResponse("<p>app.html not found</p>", status_code=404)
+    return FileResponse(path, media_type="text/html")
+
+
+@app.get("/app/rag-app.js")
+def app_js():
+    """Serve the API-driven RAG app script."""
+    path = TEMPLATES_DIR / "rag-app.js"
+    if not path.exists():
+        return JSONResponse({"error": "rag-app.js not found"}, status_code=404)
+    return FileResponse(path, media_type="application/javascript")
 
 
 @app.post("/api/upload-pdf")
@@ -311,6 +374,61 @@ def api_sync_to_s3():
         "message": f"Uploaded {counts['cache']} cache file(s), {counts['pdfs']} PDF(s) to S3.",
         "uploaded": counts,
     })
+
+
+@app.post("/api/query", response_model=QueryResponse)
+def api_query(payload: QueryRequest):
+    """
+    JSON RAG endpoint for reuse from other services.
+
+    Request body:
+      {
+        "question": "...",
+        "top_k_text": 5,
+        "top_k_img": 6,
+        "temp": 0.5
+      }
+    """
+    try:
+        rag = _get_rag()
+    except RuntimeError as e:
+        return JSONResponse(
+            {
+                "detail": f"RAG not available: {e}. "
+                "Check PROJECT_ID / LOCATION / GOOGLE_APPLICATION_CREDENTIALS and data/cache.",
+            },
+            status_code=503,
+        )
+
+    text_matches = rag.search_text(
+        payload.question,
+        top_n=payload.top_k_text,
+        chunk_text=True,
+    )
+    image_matches = rag.search_images_by_description_text(
+        payload.question,
+        top_n=payload.top_k_img,
+    )
+    out = rag.answer_multimodal_query(
+        payload.question,
+        top_n_text=payload.top_k_text,
+        top_n_images=payload.top_k_img,
+        temperature=payload.temp,
+        stream=False,
+        include_step_by_step=False,
+    )
+    answer = out["response"]
+    if not isinstance(answer, str):
+        answer = str(answer)
+
+    texts_norm = _normalize_text_matches(text_matches)
+    images_norm = _normalize_image_matches(image_matches)
+
+    return QueryResponse(
+        answer=answer,
+        texts=[TextChunk(**t) for t in texts_norm],
+        images=[ImageMatch(**img) for img in images_norm],
+    )
 
 
 @app.get("/", response_class=HTMLResponse)

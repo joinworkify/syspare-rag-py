@@ -19,3 +19,24 @@ web
 .vscode
 
 rag-service-account.json
+
+# RAG Viewer TSX (Vite/React)
+rag-viewer-tsx/node_modules
+rag-viewer-tsx/dist
+
+# RAG Viewer Next.js
+rag-viewer-nextjs/node_modules
+rag-viewer-nextjs/.next
+rag-viewer-nextjs/out
+rag-viewer-tsx/.env
+rag-viewer-tsx/package-lock.json
+rag-viewer-tsx/yarn.lock
+
+testing/node_modules
+testing/cache
+testing/out_images
+
+
+test
+out_images
+cache

@@ -244,28 +244,6 @@ def get_chunk_text_metadata(
     overlap: int = 100,
     embedding_size: int = 128,
 ) -> tuple[str, dict, dict, dict]:
-    """
-    * Extracts text from a given page object, chunks it, and generates embeddings for each chunk.
-    * Takes a page object, character limit per chunk, overlap between chunks, and embedding size as input.
-    * Returns the extracted text, the chunked text dictionary, and the chunk embeddings dictionary.
-
-    Args:
-        page: The fitz.Page object to process.
-        character_limit: Maximum characters per chunk (defaults to 1000).
-        overlap: Number of overlapping characters between chunks (defaults to 100).
-        embedding_size: Size of the embedding vector (defaults to 128).
-
-    Returns:
-        A tuple containing:
-            - Extracted page text as a string.
-            - Dictionary of embeddings for the entire page text (key="text_embedding").
-            - Dictionary of chunked text (key=chunk number, value=text chunk).
-            - Dictionary of embeddings for each chunk (key=chunk number, value=embedding).
-
-    Raises:
-        ValueError: If `overlap` is greater than `character_limit`.
-
-    """
 
     if overlap > character_limit:
         raise ValueError("Overlap cannot be larger than character limit.")
