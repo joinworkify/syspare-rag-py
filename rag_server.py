@@ -14,7 +14,7 @@ from pydantic import BaseModel
 
 from vertexai.generative_models import GenerationConfig
 
-from new_pipeline import Pipeline
+from pipeline import RagConfig, MultimodalRAGPipeline
 
 load_dotenv()
 
@@ -79,7 +79,7 @@ app.mount("/static", StaticFiles(directory=IMAGE_DIR), name="static")
 # -----------------------------
 # Initialize pipeline once (lazy on first use if init fails)
 # -----------------------------
-_rag: Optional[Pipeline] = None
+_rag: Optional[MultimodalRAGPipeline] = None
 _rag_error: Optional[str] = None
 
 
@@ -113,7 +113,7 @@ def _clear_rag_state() -> None:
     _rag_error = None
 
 
-def _get_rag() -> Pipeline:
+def _get_rag() -> MultimodalRAGPipeline:
     global _rag, _rag_error
     if _rag is not None:
         return _rag
@@ -121,22 +121,33 @@ def _get_rag() -> Pipeline:
         raise RuntimeError(_rag_error)
     try:
         _sync_from_s3()
-        rag_instance = Pipeline()
-        try:
-            # Try to load existing cache first
-            rag_instance.load_cache(cache_dir=CACHE_DIR)
-            print("Metadata cache loaded from disk.")
-        except Exception:
-            print("Metadata not loaded. Building metadata...")
+        cfg = RagConfig(
+            project_id=PROJECT_ID,
+            location=LOCATION,
+            model_name="gemini-2.0-flash",
+            embedding_size=1408,
+            embedding_model_name="multimodalembedding@001",
+            image_save_dir=IMAGE_DIR,
+            enable_ocr_fallback=True,
+            ocr_min_chars=40,
+            ocr_dpi=200,
+            ocr_lang="eng",
+        )
+        rag_instance = MultimodalRAGPipeline(cfg)
+        # Try to load cache first; if missing, build from PDFs.
+        if not rag_instance.load_cache(CACHE_DIR, rebuild_image_objects=False):
+            print("Metadata cache not found. Building metadata...")
             rag_instance.build_metadata(
                 pdf_folder_path=PDF_FOLDER,
                 cache_dir=CACHE_DIR,
-                force_rebuild=True,
+                force_rebuild=False,
                 generation_config=GenerationConfig(temperature=0.2),
                 ocr_fallback=True,
                 image_save_dir=IMAGE_DIR,
             )
             _sync_to_s3()
+        else:
+            print("Metadata cache loaded from disk.")
         _rag = rag_instance
         return _rag
     except Exception as e:
@@ -342,7 +353,19 @@ def api_build_cache():
     _clear_rag_state()
     try:
         _sync_from_s3()
-        rag_instance = Pipeline()
+        cfg = RagConfig(
+            project_id=PROJECT_ID,
+            location=LOCATION,
+            model_name="gemini-2.0-flash",
+            embedding_size=1408,
+            embedding_model_name="multimodalembedding@001",
+            image_save_dir=IMAGE_DIR,
+            enable_ocr_fallback=True,
+            ocr_min_chars=40,
+            ocr_dpi=200,
+            ocr_lang="eng",
+        )
+        rag_instance = MultimodalRAGPipeline(cfg)
         rag_instance.build_metadata(
             pdf_folder_path=PDF_FOLDER,
             cache_dir=CACHE_DIR,

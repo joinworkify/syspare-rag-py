@@ -977,15 +977,17 @@ class Pipeline:
         )
 
         prompt = (
-            "Instructions: Compare the images and the text provided as Context: to answer multiple Question:\n"
+            "Instructions: Compare the images and the text provided as Context to answer the question strictly "
+            "based on that Context. Do not use outside knowledge.\n"
             f"{reasoning_line}"
-            'If unsure, respond, "Not enough context to answer".\n\n'
+            "If the context truly does not contain enough information, say explicitly: "
+            "\"The provided manual context does not contain a clear answer.\"\n\n"
             "Context:\n"
             " - Text Context:\n"
             f"{final_context_text}\n"
             " - Image Context:\n"
             f"{context_images}\n\n"
-            f"{query}\n\n"
+            f"Question: {query}\n\n"
             "Answer:\n"
         )
 
@@ -1051,7 +1053,9 @@ class Pipeline:
 
     def load_cache(self, cache_dir: str):
         """
-        Load cached metadata into the instance and rebuild image objects if needed.
+        Load cached metadata into the instance from CACHE_DIR.
+        For server use we skip rebuilding in-memory image objects here to keep startup fast;
+        image objects are created lazily in retrieval helpers.
         Returns (text_metadata_df, image_metadata_df) for convenience.
         """
         cache_path = Path(cache_dir)
@@ -1061,9 +1065,6 @@ class Pipeline:
         self.text_metadata_df = pd.read_pickle(text_pkl)
         self.image_metadata_df = pd.read_pickle(image_pkl)
 
-        if "image_object" not in self.image_metadata_df.columns:
-            self._rebuild_image_objects_from_paths()
-
         return self.text_metadata_df, self.image_metadata_df
 
 
@@ -1071,7 +1072,8 @@ class Pipeline:
     def _rebuild_image_objects_from_paths(self):
         """
         Rebuild PIL Image objects from stored image path column.
-        We are flexible on the column name to match the metadata schema.
+        Generally only needed in notebook/diagnostic flows; the server path
+        does not call this to avoid slow startup.
         """
         if self.image_metadata_df is None:
             return False

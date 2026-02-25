@@ -3,6 +3,8 @@ import os
 import time
 from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 
+import cv2
+
 try:
     from IPython.display import display
 except ImportError:
@@ -266,6 +268,61 @@ def get_chunk_text_metadata(
     return text, page_text_embeddings_dict, chunked_text_dict, chunk_embeddings_dict
 
 
+def find_and_crop_blocks(
+    page_img_path: str,
+    out_dir: str,
+    min_area: float = 0.03,
+    delete_original: bool = True,
+) -> List[str]:
+    """
+    Find large connected blocks (tables, figures, diagrams) in a page image and
+    save each as a cropped PNG in out_dir.
+
+    Returns a list of crop file paths. If no suitable blocks are found, returns [].
+    """
+    os.makedirs(out_dir, exist_ok=True)
+    img = cv2.imread(page_img_path)
+    if img is None:
+        raise ValueError(f"Could not read {page_img_path}")
+
+    H, W = img.shape[:2]
+    page_area = H * W
+
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    thr = cv2.threshold(
+        gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU
+    )[1]
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (25, 25))
+    connected = cv2.morphologyEx(thr, cv2.MORPH_CLOSE, kernel, iterations=2)
+    cnts, _ = cv2.findContours(
+        connected, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+    )
+
+    crops: List[str] = []
+    base = os.path.splitext(os.path.basename(page_img_path))[0]
+    idx = 1
+
+    for c in cnts:
+        x, y, w, h = cv2.boundingRect(c)
+        if (w * h) < (min_area * page_area):
+            continue
+
+        crop = img[y : y + h, x : x + w]
+        out_path = os.path.join(out_dir, f"{base}_crop_{idx:02d}.png")
+        ok = cv2.imwrite(out_path, crop)
+        if ok:
+            crops.append(out_path)
+            idx += 1
+
+    if delete_original and os.path.exists(page_img_path):
+        try:
+            os.remove(page_img_path)
+        except FileNotFoundError:
+            pass
+
+    return crops
+
+
 def get_image_for_gemini(
     doc: fitz.Document,
     image: tuple,
@@ -273,29 +330,37 @@ def get_image_for_gemini(
     image_save_dir: str,
     file_name: str,
     page_num: int,
-) -> Tuple[Image, str]:
+    ) -> Tuple[Image, str]:
     """
-    Extracts an image from a PDF document, converts it to JPEG format (handling color conversions), saves it, and loads it as a PIL Image Object.
+    Extract an image from a PDF page, save it, optionally auto-crop large visual
+    blocks (tables/figures), and return a Gemini Image plus its final path.
     """
 
     try:
         xref = image[0]
         pix = fitz.Pixmap(doc, xref)
 
-        # Check and convert color space if needed
+        # Normalize color space for consistent JPEG encoding
         if pix.colorspace not in (fitz.csGRAY, fitz.csRGB, fitz.csCMYK):
-            pix = fitz.Pixmap(fitz.csRGB, pix)  # Convert to RGB
+            pix = fitz.Pixmap(fitz.csRGB, pix)
 
-        # Now save as JPEG
-        image_name = (
-            f"{image_save_dir}/{file_name}_image_{page_num}_{image_no}_{xref}.jpeg"
-        )
         os.makedirs(image_save_dir, exist_ok=True)
+        base_name = f"{file_name}_image_{page_num}_{image_no}_{xref}.jpeg"
+        image_name = os.path.join(image_save_dir, base_name)
         pix.save(image_name)
 
-        image_for_gemini = Image.load_from_file(
-            image_name
-        )  # Use Image.open for loading
+        # Auto-crop into blocks and prefer the first crop if available
+        try:
+            crops = find_and_crop_blocks(
+                image_name, out_dir=image_save_dir, min_area=0.03, delete_original=True
+            )
+            if crops:
+                image_name = crops[0]
+        except Exception as crop_err:
+            # Cropping is best-effort; fall back to the original saved image
+            print(f"Warning: auto-cropping failed for {image_name}: {crop_err}")
+
+        image_for_gemini = Image.load_from_file(image_name)
         return image_for_gemini, image_name
 
     except Exception as e:  # Catch-all for unexpected errors
