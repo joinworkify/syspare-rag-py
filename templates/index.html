@@ -78,7 +78,7 @@
             Upload to S3
           </button>
         </div>
-        <p id="action-status" class="mt-2 text-sm text-slate-500 min-h-[1.5rem]"></p>
+        <p id="action-status" class="mt-2 text-sm text-slate-500 min-h-6"></p>
       </div>
     </section>
 
@@ -88,7 +88,7 @@
       <!-- Answer -->
       <div class="xl:col-span-3 bg-white rounded-xl border border-slate-200 shadow-sm p-6">
         <h2 class="text-lg font-semibold text-slate-900 mb-3">Gemini Answer</h2>
-        <div class="prose prose-slate max-w-none text-slate-700 leading-relaxed whitespace-pre-wrap break-words">{{ answer }}</div>
+        <div class="prose prose-slate max-w-none text-slate-700 leading-relaxed whitespace-pre-wrap wrap-break-word">{{ answer }}</div>
       </div>
 
       <!-- Images -->
@@ -142,7 +142,7 @@
             {% if t.page %}<span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-slate-200 text-slate-700">p{{ t.page }}</span>{% endif %}
             {% if t.score is not none %}<span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-emerald-100 text-emerald-800">{{ "%.3f"|format(t.score) }}</span>{% endif %}
           </div>
-          <p class="text-sm text-slate-600 leading-relaxed whitespace-pre-wrap break-words">{{ t.chunk_text }}</p>
+          <p class="text-sm text-slate-600 leading-relaxed whitespace-pre-wrap wrap-break-word">{{ t.chunk_text }}</p>
         </div>
         {% endfor %}
       </div>

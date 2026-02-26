@@ -211,6 +211,70 @@ The Python FastAPI app can be deployed on [Render](https://render.com) using the
 
 ---
 
+## Vercel vs Render (and keeping the service awake)
+
+### Can this Python app run on Vercel?
+
+**No.** This RAG server is a **stateful, long-running** app: it loads the pipeline and cache into memory and keeps them there. Vercel runs **serverless functions** — short-lived, stateless, with strict time limits (e.g. 10–60 seconds). Each request can hit a new instance, so you can’t keep the RAG pipeline in memory. Cold starts would re-run heavy init on every request, and long RAG queries could hit the execution limit. So **deploy this Python API on Render** (or another host that runs a persistent process), not on Vercel.
+
+### Recommended: API on Render, frontend on Vercel
+
+- **Render** — Deploy the Python RAG server (this repo, `render.yaml`). You get a URL like `https://syspare-rag-py.onrender.com`.
+- **Vercel** — Deploy only the **frontend** (e.g. `rag-viewer-tsx`). Build with `VITE_RAG_API_URL=https://syspare-rag-py.onrender.com` (or your Render URL). Point the UI at the API.
+- On the **RAG server** (Render), set **CORS** so Vercel can call it: in Render Environment add `CORS_ORIGINS=https://your-app.vercel.app` (your Vercel app’s URL).
+
+That way you get Vercel’s fast, global frontend and Render’s always-on (or wake-on-request) API.
+
+### Render free tier: service sleeps when idle
+
+On Render’s **free** plan, the service **spins down after ~15 minutes of no traffic**. The next request wakes it (cold start can take 30–60 seconds). So “Render only starts the service when someone enters the link” is expected on free tier.
+
+**Options:**
+
+1. **Ping to keep it awake** — Use a free uptime/cron service (e.g. [cron-job.org](https://cron-job.org), [UptimeRobot](https://uptimerobot.com)) to hit `GET https://your-app.onrender.com/health` every 10–15 minutes. That reduces (but doesn’t always prevent) spin-down, and can still sleep between pings.
+2. **Upgrade Render** — A paid plan keeps the service **always on** (no spin-down), so the link responds quickly every time.
+
+---
+
+## Deploy on PythonAnywhere
+
+**Yes.** PythonAnywhere runs **long-running Python web apps** (unlike Vercel), so this RAG server is a good fit. You get a persistent process and can use the free tier for light use or a paid plan for always-on.
+
+### Steps (outline)
+
+1. **Sign up** at [pythonanywhere.com](https://www.pythonanywhere.com) and create a **Web** app.
+
+2. **Clone the repo** (or upload files) into your home directory, e.g. `/home/yourusername/multi-rag-syspare`.
+
+3. **Virtualenv:** In the Web app configuration, set the virtualenv to a path like `/home/yourusername/multi-rag-syspare/venv`, then create it and install deps:
+   ```bash
+   python -m venv /home/yourusername/multi-rag-syspare/venv
+   source venv/bin/activate
+   pip install -r requirements.txt
+   ```
+
+4. **Run FastAPI:** PythonAnywhere supports ASGI (beta) or WSGI.
+   - **ASGI (beta):** Contact support@pythonanywhere.com to enable ASGI, then in the Web tab set the ASGI app to your app (e.g. `rag_server:app`) and the run command to use uvicorn. See [ASGI on PythonAnywhere](https://help.pythonanywhere.com/pages/ASGICommandLine/).
+   - **WSGI:** Use a WSGI adapter so their server can run FastAPI. In the **WSGI configuration file** (e.g. `/var/www/yourusername_pythonanywhere_com_wsgi.py`), point to your app:
+     ```python
+     import sys
+     sys.path.insert(0, '/home/yourusername/multi-rag-syspare')
+     from a2wsgi import ASGIMiddleware
+     from rag_server import app
+     application = ASGIMiddleware(app)
+     ```
+     Install the adapter: `pip install a2wsgi`.
+
+5. **Static files:** In the Web tab, add a **Static files** mapping: URL `/static` → Directory `/home/yourusername/multi-rag-syspare/cache_ym358a/images` (or whatever `IMAGE_DIR` is), so retrieved images load correctly.
+
+6. **Environment variables:** Set `PROJECT_ID`, `LOCATION`, `GOOGLE_APPLICATION_CREDENTIALS` (path to your service account JSON in your home dir), and optionally `PDF_FOLDER`, `CACHE_DIR`, `CORS_ORIGINS`, and S3 vars. You can put them in a `.env` file in the project root or set them in the Web app setup if PythonAnywhere allows.
+
+7. **Reload** the web app from the PythonAnywhere Web tab.
+
+Free tier limits (e.g. one web app, limited CPU) apply; paid plans give more resources and always-on behavior. If you use S3 for cache and PDFs, the app can sync on startup so the ephemeral filesystem is less of an issue.
+
+---
+
 ## AWS S3 storage (cache + PDFs)
 
 Cache and PDFs can be stored in an S3 bucket so they persist across deploys and are shared across instances.
