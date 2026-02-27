@@ -40,6 +40,7 @@ from utils import (
     print_text_to_image_citation,
     print_text_to_text_citation,
 )
+import re
 
 try:
     from PIL import Image as PILImage
@@ -509,7 +510,16 @@ class MultimodalRAGPipeline:
     ) -> Dict[Any, Dict[str, Any]]:
         if not self.has_metadata:
             raise RuntimeError("Run build_metadata() first.")
-        embedding_size = embedding_size or self.config.embedding_size
+        # Prefer the actual embedding dimension stored in image_metadata_df[column_name]
+        if embedding_size is None:
+            try:
+                first_vec = self.image_metadata_df[column_name].iloc[0]  # type: ignore[index]
+                if hasattr(first_vec, "__len__"):
+                    embedding_size = len(first_vec)  # type: ignore[arg-type]
+                else:
+                    embedding_size = self.config.embedding_size
+            except Exception:
+                embedding_size = self.config.embedding_size
         return get_similar_image_from_query(
             self.text_metadata_df,  # type: ignore
             self.image_metadata_df,  # type: ignore
@@ -658,6 +668,132 @@ class MultimodalRAGPipeline:
             "image_matches": image_matches,
             "prompt": prompt,
             "response": response,
+        }
+
+    # -----------------------------
+    # Structured diagnostic answer
+    # -----------------------------
+    def _safe_parse_json(self, text: str) -> Any:
+        """
+        Best-effort JSON parsing helper for model outputs that should be JSON.
+        """
+        text = (text or "").strip()
+        # Direct parse
+        try:
+            return json.loads(text)
+        except Exception:
+            pass
+
+        # Try to extract first JSON object/array
+        m = re.search(r"(\{.*\}|\[.*\])", text, flags=re.DOTALL)
+        if m:
+            snippet = m.group(1)
+            try:
+                return json.loads(snippet)
+            except Exception:
+                pass
+
+        # Fallback: return raw text
+        return {"raw": text}
+
+    def answer_diagnostic_query(
+        self,
+        query: str,
+        *,
+        top_n_text: int = 10,
+        top_n_images: int = 6,
+        temperature: float = 0.4,
+        stream: bool = False,
+    ) -> Dict[str, Any]:
+        """
+        Return a structured diagnostic JSON answer suitable for a dashboard UI.
+
+        Shape (high level):
+        {
+          "summary": "...",
+          "confidence": { "score": 0.0-1.0, "label": "direct_match|low|medium|high" },
+          "urgency": { "label": "critical|warning|normal|info", "reason": "..." },
+          "actions": [
+             { "id": "ACTION 01", "title": "...", "description": "..." },
+             ...
+          ],
+          "torque_spec": { "label": "...", "value_nm": 0, "value_ft_lbs": 0, "raw": "..." }
+        }
+        """
+        text_matches = self.search_text(query, top_n=top_n_text, chunk_text=True)
+        image_matches = self.search_images_by_description_text(
+            query, top_n=top_n_images
+        )
+
+        context_text = [value["chunk_text"] for _, value in text_matches.items()]
+        final_context_text = "\n".join(context_text)
+
+        context_images: List[Any] = []
+        for _, value in image_matches.items():
+            context_images.extend(
+                [
+                    "Image: ",
+                    value["image_object"],
+                    "Caption: ",
+                    value["image_description"],
+                ]
+            )
+
+        prompt = (
+            "You are a service manual assistant. Using ONLY the following manual context "
+            "(text + image descriptions), create a structured diagnostic summary in JSON.\n\n"
+            "JSON schema (keys and nesting):\n"
+            "{\n"
+            '  "summary": string,                       // one-paragraph diagnostic summary\n'
+            '  "confidence": {\n'
+            '    "score": number,                      // 0.0 - 1.0\n'
+            '    "label": string                       // e.g. "direct_match", "high", "medium", "low"\n'
+            "  },\n"
+            '  "urgency": {\n'
+            '    "label": string,                      // e.g. "critical", "warning", "normal", "info"\n'
+            '    "reason": string                      // short explanation of urgency\n'
+            "  },\n"
+            '  "actions": [                            // ordered field procedures\n'
+            "    {\n"
+            '      "id": string,                       // e.g. "ACTION 01"\n'
+            '      "title": string,                    // short action title\n'
+            '      "description": string               // step-by-step description in 1-3 sentences\n'
+            "    }\n"
+            "  ],\n"
+            '  "torque_spec": {                        // optional\n'
+            '    "label": string,                      // e.g. "Assembly Mounting Bolt (M10 x 30)"\n'
+            '    "value_nm": number|null,              // torque in N·m if available\n'
+            '    "value_ft_lbs": number|null,          // torque in ft-lbs if available\n'
+            '    "raw": string                         // original torque text from the manual\n'
+            "  }\n"
+            "}\n\n"
+            "If torque information is not present, set torque_spec to null.\n"
+            "Do NOT include any additional keys or commentary outside the JSON.\n\n"
+            "Context:\n"
+            " - Text Context:\n"
+            f"{final_context_text}\n"
+            " - Image Context:\n"
+            f"{context_images}\n\n"
+            f"Question: {query}\n\n"
+            "Return ONLY the JSON object.\n"
+        )
+
+        response = get_gemini_response(
+            self.multimodal_model,
+            model_input=[prompt],
+            stream=stream,
+            generation_config=GenerationConfig(temperature=temperature),
+        )
+
+        parsed = self._safe_parse_json(response)
+
+        return {
+            "query": query,
+            "text_matches": text_matches,
+            "image_matches": image_matches,
+            "prompt": prompt,
+            "response_raw": response,
+            "response_parsed": parsed,
         }
 
     # -----------------------------
