@@ -1,6 +1,7 @@
 # rag_server.py
 import os
 import shutil
+import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -282,6 +283,50 @@ class QueryWithOptionalImageRequest(BaseModel):
     embedding_size: int = 128
 
 
+class DiagnosticAction(BaseModel):
+    id: str
+    title: str
+    description: str
+
+
+class DiagnosticConfidence(BaseModel):
+    score: float
+    label: Optional[str] = None
+
+
+class DiagnosticUrgency(BaseModel):
+    label: str
+    reason: Optional[str] = None
+
+
+class DiagnosticTorqueSpec(BaseModel):
+    label: Optional[str] = None
+    value_nm: Optional[float] = None
+    value_ft_lbs: Optional[float] = None
+    raw: Optional[str] = None
+
+
+class DiagnosticPayload(BaseModel):
+    question: str
+    top_k_text: int = 10
+    top_k_img: int = 6
+    temp: float = 0.4
+
+
+class DiagnosticEnvelope(BaseModel):
+    summary: str
+    confidence: DiagnosticConfidence
+    urgency: DiagnosticUrgency
+    actions: List[DiagnosticAction]
+    torque_spec: Optional[DiagnosticTorqueSpec] = None
+
+
+class DiagnosticAPIResponse(BaseModel):
+    question: str
+    diagnostic: DiagnosticEnvelope
+    images: List[ImageMatch]
+
+
 # -----------------------------
 # Template render helper
 # -----------------------------
@@ -315,6 +360,15 @@ def app_js():
     if not path.exists():
         return JSONResponse({"error": "rag-app.js not found"}, status_code=404)
     return FileResponse(path, media_type="application/javascript")
+
+
+@app.get("/v1", response_class=HTMLResponse)
+def v1_page():
+    """Structured diagnostic UI that calls /api/v1/diagnose."""
+    path = TEMPLATES_DIR / "v1.html"
+    if not path.exists():
+        return HTMLResponse("<p>v1.html not found</p>", status_code=404)
+    return FileResponse(path, media_type="text/html")
 
 
 @app.post("/api/upload-pdf")
@@ -538,6 +592,277 @@ def api_query_with_optional_image(payload: QueryWithOptionalImageRequest):
     )
 
 
+@app.post("/api/query-upload", response_model=QueryResponse)
+async def api_query_upload(
+    question: str = Form(...),
+    top_k_text: int = Form(5),
+    top_k_img: int = Form(1),
+    temp: float = Form(0.2),
+    image: Optional[UploadFile] = File(None),
+):
+    """
+    Multipart endpoint: question + optional uploaded image.
+    If an image is provided, image retrieval uses image-embedding search.
+    Answer is generated from text-context (same behavior as /api/query-with-image).
+    """
+    try:
+        rag = _get_rag()
+    except RuntimeError as e:
+        return JSONResponse(
+            {
+                "detail": f"RAG not available: {e}. "
+                "Check PROJECT_ID / LOCATION / GOOGLE_APPLICATION_CREDENTIALS and data/cache.",
+            },
+            status_code=503,
+        )
+
+    # Answer from text-side (fast + stable)
+    text_result = rag.answer_text_query(
+        question,
+        top_n=top_k_text,
+        temperature=temp,
+        stream=False,
+    )
+    answer = text_result.get("response", "")
+    if not isinstance(answer, str):
+        answer = str(answer)
+
+    text_matches = rag.search_text(
+        question,
+        top_n=top_k_text,
+        chunk_text=True,
+    )
+
+    # Image retrieval
+    image_matches: Dict[Any, Dict[str, Any]]
+    if image and image.filename:
+        # Save to a temp location on disk for embedding extraction
+        qimg_dir = Path(CACHE_DIR) / "query_images"
+        qimg_dir.mkdir(parents=True, exist_ok=True)
+        suffix = Path(image.filename).suffix.lower() or ".png"
+        dest = qimg_dir / f"query_{uuid.uuid4().hex}{suffix}"
+        content = await image.read()
+        dest.write_bytes(content)
+
+        image_matches = rag.search_images_by_image_embedding(
+            question,
+            image_query_path=str(dest),
+            top_n=top_k_img,
+        )
+    else:
+        image_matches = rag.search_images_by_description_text(
+            question,
+            top_n=top_k_img,
+            embedding_size=rag.config.embedding_size,
+        )
+
+    texts_norm = _normalize_text_matches(text_matches)
+    images_norm = _normalize_image_matches(image_matches)
+
+    return QueryResponse(
+        answer=answer,
+        texts=[TextChunk(**t) for t in texts_norm],
+        images=[ImageMatch(**img) for img in images_norm],
+    )
+
+
+@app.post("/api/v1/diagnose", response_model=DiagnosticAPIResponse)
+def api_v1_diagnose(payload: DiagnosticPayload):
+    """
+    v1 diagnostic endpoint.
+    Returns structured JSON used by the /v1 dashboard UI.
+    """
+    try:
+        rag = _get_rag()
+    except RuntimeError as e:
+        raise RuntimeError(
+            f"RAG not available: {e}. "
+            "Check PROJECT_ID / LOCATION / GOOGLE_APPLICATION_CREDENTIALS and data/cache."
+        )
+
+    out = rag.answer_diagnostic_query(
+        payload.question,
+        top_n_text=payload.top_k_text,
+        top_n_images=payload.top_k_img,
+        temperature=payload.temp,
+        stream=False,
+    )
+
+    parsed = out.get("response_parsed") or {}
+    image_matches = out.get("image_matches") or {}
+
+    summary = parsed.get("summary") or ""
+    conf = parsed.get("confidence") or {}
+    urg = parsed.get("urgency") or {}
+    actions_raw = parsed.get("actions") or []
+    torque_raw = parsed.get("torque_spec")
+
+    # Normalize confidence
+    confidence = DiagnosticConfidence(
+        score=float(conf.get("score", 0.0) or 0.0),
+        label=str(conf.get("label") or "").strip() or None,
+    )
+
+    # Normalize urgency
+    urgency = DiagnosticUrgency(
+        label=str(urg.get("label") or "normal"),
+        reason=str(urg.get("reason") or ""),
+    )
+
+    # Normalize actions
+    actions: List[DiagnosticAction] = []
+    if isinstance(actions_raw, list):
+        for idx, a in enumerate(actions_raw):
+            if not isinstance(a, dict):
+                continue
+            aid = str(a.get("id") or f"ACTION {idx+1:02d}")
+            title = str(a.get("title") or f"Action {idx+1}")
+            desc = str(a.get("description") or "")
+            actions.append(
+                DiagnosticAction(
+                    id=aid,
+                    title=title,
+                    description=desc,
+                )
+            )
+
+    torque_spec: Optional[DiagnosticTorqueSpec] = None
+    if isinstance(torque_raw, dict):
+        torque_spec = DiagnosticTorqueSpec(
+            label=torque_raw.get("label"),
+            value_nm=torque_raw.get("value_nm"),
+            value_ft_lbs=torque_raw.get("value_ft_lbs"),
+            raw=torque_raw.get("raw"),
+        )
+
+    envelope = DiagnosticEnvelope(
+        summary=summary,
+        confidence=confidence,
+        urgency=urgency,
+        actions=actions,
+        torque_spec=torque_spec,
+    )
+
+    images_norm = _normalize_image_matches(image_matches)
+
+    return DiagnosticAPIResponse(
+        question=payload.question,
+        diagnostic=envelope,
+        images=[ImageMatch(**img) for img in images_norm],
+    )
+
+
+@app.post("/api/v1/diagnose-upload", response_model=DiagnosticAPIResponse)
+async def api_v1_diagnose_upload(
+    question: str = Form(...),
+    top_k_text: int = Form(10),
+    top_k_img: int = Form(6),
+    temp: float = Form(0.4),
+    image: Optional[UploadFile] = File(None),
+):
+    """
+    Multipart variant of v1 diagnostic endpoint that accepts an optional image.
+    The image is used for image-embedding-based retrieval; the diagnostic text
+    summary is still based on text + image descriptions.
+    """
+    try:
+        rag = _get_rag()
+    except RuntimeError as e:
+        return JSONResponse(
+            {
+                "detail": f"RAG not available: {e}. "
+                "Check PROJECT_ID / LOCATION / GOOGLE_APPLICATION_CREDENTIALS and data/cache.",
+            },
+            status_code=503,
+        )
+
+    # Compute image matches based on uploaded image (if any)
+    if image and image.filename:
+        qimg_dir = Path(CACHE_DIR) / "query_images"
+        qimg_dir.mkdir(parents=True, exist_ok=True)
+        suffix = Path(image.filename).suffix.lower() or ".png"
+        dest = qimg_dir / f"query_{uuid.uuid4().hex}{suffix}"
+        content = await image.read()
+        dest.write_bytes(content)
+
+        image_matches = rag.search_images_by_image_embedding(
+            question,
+            image_query_path=str(dest),
+            top_n=top_k_img,
+        )
+    else:
+        image_matches = rag.search_images_by_description_text(
+            question,
+            top_n=top_k_img,
+        )
+
+    out = rag.answer_diagnostic_query(
+        question,
+        top_n_text=top_k_text,
+        top_n_images=top_k_img,
+        temperature=temp,
+        stream=False,
+    )
+    parsed = out.get("response_parsed") or {}
+
+    summary = parsed.get("summary") or ""
+    conf = parsed.get("confidence") or {}
+    urg = parsed.get("urgency") or {}
+    actions_raw = parsed.get("actions") or []
+    torque_raw = parsed.get("torque_spec")
+
+    confidence = DiagnosticConfidence(
+        score=float(conf.get("score", 0.0) or 0.0),
+        label=str(conf.get("label") or "").strip() or None,
+    )
+
+    urgency = DiagnosticUrgency(
+        label=str(urg.get("label") or "normal"),
+        reason=str(urg.get("reason") or ""),
+    )
+
+    actions: List[DiagnosticAction] = []
+    if isinstance(actions_raw, list):
+        for idx, a in enumerate(actions_raw):
+            if not isinstance(a, dict):
+                continue
+            aid = str(a.get("id") or f"ACTION {idx+1:02d}")
+            title = str(a.get("title") or f"Action {idx+1}")
+            desc = str(a.get("description") or "")
+            actions.append(
+                DiagnosticAction(
+                    id=aid,
+                    title=title,
+                    description=desc,
+                )
+            )
+
+    torque_spec: Optional[DiagnosticTorqueSpec] = None
+    if isinstance(torque_raw, dict):
+        torque_spec = DiagnosticTorqueSpec(
+            label=torque_raw.get("label"),
+            value_nm=torque_raw.get("value_nm"),
+            value_ft_lbs=torque_raw.get("value_ft_lbs"),
+            raw=torque_raw.get("raw"),
+        )
+
+    envelope = DiagnosticEnvelope(
+        summary=summary,
+        confidence=confidence,
+        urgency=urgency,
+        actions=actions,
+        torque_spec=torque_spec,
+    )
+
+    images_norm = _normalize_image_matches(image_matches)
+
+    return DiagnosticAPIResponse(
+        question=question,
+        diagnostic=envelope,
+        images=[ImageMatch(**img) for img in images_norm],
+    )
+
+
 @app.get("/", response_class=HTMLResponse)
 def home():
     html = _render_page(
@@ -560,6 +885,7 @@ def query(
     top_k_text: int = Form(5),
     top_k_img: int = Form(6),
     temp: float = Form(0.5),
+    image: Optional[UploadFile] = File(None),
 ):
     try:
         rag = _get_rag()
@@ -576,23 +902,45 @@ def query(
         )
         return HTMLResponse(html)
 
-    # 1) Retrieve text + images (no need to print citations; we display results directly)
+    # 1) Retrieve text (always)
     text_matches = rag.search_text(q, top_n=top_k_text, chunk_text=True)
-    image_matches = rag.search_images_by_description_text(q, top_n=top_k_img)
 
-    # 2) Build a multimodal prompt and ask Gemini (NON-streaming for clean UI)
-    out = rag.answer_multimodal_query(
-        q,
-        top_n_text=top_k_text,
-        top_n_images=top_k_img,
-        temperature=temp,
-        stream=False,
-        include_step_by_step=False,
-    )
+    # 2) Images: if an image is uploaded, use image-embedding retrieval
+    if image and image.filename:
+        qimg_dir = Path(CACHE_DIR) / "query_images"
+        qimg_dir.mkdir(parents=True, exist_ok=True)
+        suffix = Path(image.filename).suffix.lower() or ".png"
+        dest = qimg_dir / f"query_{uuid.uuid4().hex}{suffix}"
+        dest.write_bytes(image.file.read())
 
-    answer = out["response"]
-    if not isinstance(answer, str):
-        answer = str(answer)
+        image_matches = rag.search_images_by_image_embedding(
+            q,
+            image_query_path=str(dest),
+            top_n=top_k_img,
+        )
+
+        # Answer from text-side for consistency with the API path
+        text_result = rag.answer_text_query(
+            q, top_n=top_k_text, temperature=temp, stream=False
+        )
+        answer = text_result.get("response", "")
+        if not isinstance(answer, str):
+            answer = str(answer)
+    else:
+        image_matches = rag.search_images_by_description_text(q, top_n=top_k_img)
+
+        # Existing multimodal prompt answer
+        out = rag.answer_multimodal_query(
+            q,
+            top_n_text=top_k_text,
+            top_n_images=top_k_img,
+            temperature=temp,
+            stream=False,
+            include_step_by_step=False,
+        )
+        answer = out["response"]
+        if not isinstance(answer, str):
+            answer = str(answer)
 
     html = _render_page(
         ran=True,

@@ -117,6 +117,7 @@ function setupLightbox() {
 }
 async function runQuery() {
   const questionInput = el('api-q');
+  const imageInput = el('api-image');
   const topKTextInput = el('api-top-k-text');
   const topKImgInput = el('api-top-k-img');
   const tempInput = el('api-temp');
@@ -142,11 +143,27 @@ async function runQuery() {
   statusEl.style.color = '#64748b';
   if (resultsEl) resultsEl.classList.add('hidden');
   try {
-    const res = await fetch('/api/query', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-      body: JSON.stringify(payload),
-    });
+    const file = imageInput?.files?.[0] ?? null;
+    const useUpload = !!file;
+    const res = useUpload
+      ? await fetch('/api/query-upload', {
+          method: 'POST',
+          headers: { Accept: 'application/json' },
+          body: (() => {
+            const fd = new FormData();
+            fd.set('question', payload.question);
+            fd.set('top_k_text', String(payload.top_k_text ?? 5));
+            fd.set('top_k_img', String(payload.top_k_img ?? 6));
+            fd.set('temp', String(payload.temp ?? 0.5));
+            if (file) fd.set('image', file, file.name);
+            return fd;
+          })(),
+        })
+      : await fetch('/api/query', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+          body: JSON.stringify(payload),
+        });
     const data = await res.json();
     if (!res.ok) {
       statusEl.textContent = data.detail ?? data.error ?? 'Error ' + res.status;

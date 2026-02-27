@@ -24,7 +24,7 @@
 
     <!-- Search card -->
     <section class="bg-white rounded-xl border border-slate-200 shadow-sm p-6 mb-8">
-      <form method="post" action="/query" class="space-y-4">
+      <form method="post" action="/query" enctype="multipart/form-data" class="space-y-4">
         <div>
           <label for="q" class="block text-sm font-medium text-slate-700 mb-1.5">Your question</label>
           <input
@@ -35,6 +35,17 @@
             placeholder="Ask something about the documents..."
             class="w-full px-4 py-3 rounded-lg border border-slate-300 focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 outline-none transition text-slate-900 placeholder-slate-400"
           />
+        </div>
+        <div>
+          <label for="image" class="block text-sm font-medium text-slate-700 mb-1.5">Optional image (image-based retrieval)</label>
+          <input
+            id="image"
+            name="image"
+            type="file"
+            accept="image/*"
+            class="block w-full text-sm text-slate-700 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-medium file:bg-slate-100 file:text-slate-700 hover:file:bg-slate-200"
+          />
+          <p class="mt-1 text-xs text-slate-500">If provided, retrieved images are selected using image embeddings (useful for “find similar diagram/table”).</p>
         </div>
         <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
           <div>

@@ -18,7 +18,7 @@ cp .env.example .env.local   # set GOOGLE_CLOUD_PROJECT, GOOGLE_CLOUD_LOCATION
 npm install && npm run dev
 ```
 
-Then build the RAG cache (once): `POST http://localhost:3000/api/build-metadata` with body `{"includePageImages": true}`. After that, open http://localhost:3000 and run queries.
+Then build the RAG cache (once): `POST http://localhost:3000/api/build-metadata` with body `{"includePageImages": true}`. After that, open [http://localhost:3000](http://localhost:3000) and run queries.
 
 ---
 
@@ -113,30 +113,27 @@ Use this when you want to authenticate with a **JSON key file** (e.g. on Render,
 ### Step 3: Use it locally
 
 1. Move the file somewhere safe, e.g.:
-   ```bash
+  ```bash
    mkdir -p ~/.config/gcloud
    mv ~/Downloads/your-project-abc123.json ~/.config/gcloud/rag-service-account.json
-   ```
+  ```
 2. In your project, set the path in `.env`:
-   ```bash
+  ```bash
    GOOGLE_APPLICATION_CREDENTIALS=/Users/yourusername/.config/gcloud/rag-service-account.json
-   ```
+  ```
    Or export in the shell before running:
-   ```bash
-   export GOOGLE_APPLICATION_CREDENTIALS=~/.config/gcloud/rag-service-account.json
-   uvicorn rag_server:app --reload --port 8000
-   ```
 
 ### Step 4: Use it on Render
 
 1. In Render Dashboard → your Web Service → **Environment**.
 2. Add a **Secret File**:
-   - **Key:** `GOOGLE_APPLICATION_CREDENTIALS`
-   - **Filename:** path the app will read, e.g. `/etc/secrets/gcp-key.json`
-   - **Contents:** paste the **entire contents** of your service account JSON file.
+  - **Key:** `GOOGLE_APPLICATION_CREDENTIALS`
+  - **Filename:** path the app will read, e.g. `/etc/secrets/gcp-key.json`
+  - **Contents:** paste the **entire contents** of your service account JSON file.
 3. Save. Render writes that content to `/etc/secrets/gcp-key.json` at runtime, so the app finds the key at that path.
 
 If you use **Environment** only (no Secret File), add a variable:
+
 - **Key:** `GOOGLE_APPLICATION_CREDENTIALS`
 - **Value:** `/etc/secrets/gcp-key.json` (only if you also added the Secret File with that filename above).
 
@@ -194,19 +191,15 @@ uvicorn rag_server:app --reload --port 8000
 The Python FastAPI app can be deployed on [Render](https://render.com) using the repo’s `render.yaml` and `requirements.txt`.
 
 1. **Connect the repo** in the Render Dashboard and create a new Web Service (or use the Blueprint from `render.yaml`).
-
 2. **Environment variables** (Dashboard → Environment):
-   - `PROJECT_ID` — Google Cloud project ID (Vertex AI).
-   - `LOCATION` — e.g. `us-central1`.
-   - Optional: `PDF_FOLDER`, `CACHE_DIR`, `IMAGE_DIR` (defaults: `./data/`, `./cache_ym358a`, `./cache_ym358a/images`).
-
+  - `PROJECT_ID` — Google Cloud project ID (Vertex AI).
+  - `LOCATION` — e.g. `us-central1`.
+  - Optional: `PDF_FOLDER`, `CACHE_DIR`, `IMAGE_DIR` (defaults: `./data/`, `./cache_ym358a`, `./cache_ym358a/images`).
 3. **Google Cloud auth** — Use a [service account](https://cloud.google.com/iam/docs/service-accounts) and set `GOOGLE_APPLICATION_CREDENTIALS` to the path of the JSON key file. On Render, add the key as a **Secret File** and set `GOOGLE_APPLICATION_CREDENTIALS` to that path (e.g. `/etc/secrets/gcp-key.json`).
-
 4. **Data and cache** — Render’s filesystem is ephemeral. Either:
-   - Use **AWS S3** (see below), or
-   - Commit a pre-built `cache_ym358a/` (and optionally `data/`) into the repo, or
-   - Use a [Render Persistent Disk](https://render.com/docs/disks) and set `CACHE_DIR` / `PDF_FOLDER` to paths on the disk.
-
+  - Use **AWS S3** (see below), or
+  - Commit a pre-built `cache_ym358a/` (and optionally `data/`) into the repo, or
+  - Use a [Render Persistent Disk](https://render.com/docs/disks) and set `CACHE_DIR` / `PDF_FOLDER` to paths on the disk.
 5. **Health check** — Use `GET /health` for Render’s health check URL.
 
 ---
@@ -243,32 +236,26 @@ On Render’s **free** plan, the service **spins down after ~15 minutes of no tr
 ### Steps (outline)
 
 1. **Sign up** at [pythonanywhere.com](https://www.pythonanywhere.com) and create a **Web** app.
-
 2. **Clone the repo** (or upload files) into your home directory, e.g. `/home/yourusername/multi-rag-syspare`.
-
 3. **Virtualenv:** In the Web app configuration, set the virtualenv to a path like `/home/yourusername/multi-rag-syspare/venv`, then create it and install deps:
-   ```bash
+  ```bash
    python -m venv /home/yourusername/multi-rag-syspare/venv
    source venv/bin/activate
    pip install -r requirements.txt
-   ```
-
+  ```
 4. **Run FastAPI:** PythonAnywhere supports ASGI (beta) or WSGI.
-   - **ASGI (beta):** Contact support@pythonanywhere.com to enable ASGI, then in the Web tab set the ASGI app to your app (e.g. `rag_server:app`) and the run command to use uvicorn. See [ASGI on PythonAnywhere](https://help.pythonanywhere.com/pages/ASGICommandLine/).
-   - **WSGI:** Use a WSGI adapter so their server can run FastAPI. In the **WSGI configuration file** (e.g. `/var/www/yourusername_pythonanywhere_com_wsgi.py`), point to your app:
-     ```python
-     import sys
-     sys.path.insert(0, '/home/yourusername/multi-rag-syspare')
-     from a2wsgi import ASGIMiddleware
-     from rag_server import app
-     application = ASGIMiddleware(app)
-     ```
-     Install the adapter: `pip install a2wsgi`.
-
+  - **ASGI (beta):** Contact [support@pythonanywhere.com](mailto:support@pythonanywhere.com) to enable ASGI, then in the Web tab set the ASGI app to your app (e.g. `rag_server:app`) and the run command to use uvicorn. See [ASGI on PythonAnywhere](https://help.pythonanywhere.com/pages/ASGICommandLine/).
+  - **WSGI:** Use a WSGI adapter so their server can run FastAPI. In the **WSGI configuration file** (e.g. `/var/www/yourusername_pythonanywhere_com_wsgi.py`), point to your app:
+    ```python
+    import sys
+    sys.path.insert(0, '/home/yourusername/multi-rag-syspare')
+    from a2wsgi import ASGIMiddleware
+    from rag_server import app
+    application = ASGIMiddleware(app)
+    ```
+    Install the adapter: `pip install a2wsgi`.
 5. **Static files:** In the Web tab, add a **Static files** mapping: URL `/static` → Directory `/home/yourusername/multi-rag-syspare/cache_ym358a/images` (or whatever `IMAGE_DIR` is), so retrieved images load correctly.
-
 6. **Environment variables:** Set `PROJECT_ID`, `LOCATION`, `GOOGLE_APPLICATION_CREDENTIALS` (path to your service account JSON in your home dir), and optionally `PDF_FOLDER`, `CACHE_DIR`, `CORS_ORIGINS`, and S3 vars. You can put them in a `.env` file in the project root or set them in the Web app setup if PythonAnywhere allows.
-
 7. **Reload** the web app from the PythonAnywhere Web tab.
 
 Free tier limits (e.g. one web app, limited CPU) apply; paid plans give more resources and always-on behavior. If you use S3 for cache and PDFs, the app can sync on startup so the ephemeral filesystem is less of an issue.
@@ -286,13 +273,15 @@ Cache and PDFs can be stored in an S3 bucket so they persist across deploys and 
 
 **Environment variables** (set in Render or `.env`; never commit real keys):
 
-| Variable | Description |
-|----------|-------------|
-| `AWS_ACCESS_KEY_ID` | AWS access key |
-| `AWS_SECRET_ACCESS_KEY` | AWS secret key |
-| `AWS_DEFAULT_REGION` | e.g. `us-east-2` |
-| `S3_BUCKET_NAME` | Bucket name (e.g. `syspare-vercel`) |
-| `S3_RAG_PREFIX` | Optional; default `rag-data` |
+
+| Variable                | Description                         |
+| ----------------------- | ----------------------------------- |
+| `AWS_ACCESS_KEY_ID`     | AWS access key                      |
+| `AWS_SECRET_ACCESS_KEY` | AWS secret key                      |
+| `AWS_DEFAULT_REGION`    | e.g. `us-east-2`                    |
+| `S3_BUCKET_NAME`        | Bucket name (e.g. `syspare-vercel`) |
+| `S3_RAG_PREFIX`         | Optional; default `rag-data`        |
+
 
 **Behavior:**
 
@@ -301,6 +290,144 @@ Cache and PDFs can be stored in an S3 bucket so they persist across deploys and 
 - **Upload PDF via API:** `POST /api/upload-pdf` with `multipart/form-data` and a PDF file. The file is saved locally and uploaded to `rag-data/pdfs/`. Restart or run a new query (with cache cleared) to re-index.
 
 **Security:** If your AWS keys were ever pasted in chat or committed, rotate them in the AWS IAM console and update the env vars.
+
+---
+
+## Deploy on AWS EC2 (with S3 cache)
+
+You can run the Python FastAPI server on a small EC2 instance and let it read PDFs/cache from S3.
+
+### 1) Create EC2 instance
+
+- Launch an **Ubuntu 22.04** instance (you can start small and scale later).
+- Create a new **key pair** (e.g. `ec2-syspare-pass`); AWS will download `ec2-syspare-pass.pem` to your machine.
+- In the **Security Group**, allow:
+  - TCP `22` from your IP (SSH).
+  - TCP `8000` (or `80/443` if you later add nginx) from the IPs that should access the app.
+
+You will use the `.pem` file to SSH into the instance and copy your service-account JSON.
+
+### 2) Clone repo into `/opt/syspare-rag-py`
+
+This block shows the full sequence you used to:
+
+- SSH into EC2.
+- Install system packages.
+- Clone the repo.
+- Create a virtualenv and install Python dependencies.
+- Copy the GCP service-account JSON onto the server.
+- Set up `.env` and systemd.
+
+```bash
+ssh -i ~/Downloads/ec2-syspare-pass.pem ubuntu@ubuntu@YOUR_EC2_PUBLIC_IP
+
+# update the dependencies
+sudo apt update
+sudo apt install -y python3.12 python3.12-venv git tesseract-ocr
+sudo apt-get update
+sudo apt-get install -y libgl1
+
+# if asked for systemctl restart networkd-dispatcher.service do this:
+sudo systemctl restart networkd-dispatcher.service #optional
+
+# download the source code
+cd /opt
+sudo git clone https://github.com/joinworkify/syspare-rag-py.git
+sudo chown -R ubuntu:ubuntu syspare-rag-py
+cd /opt/syspare-rag-py
+
+# create env
+python3.12 -m venv .venv
+source .venv/bin/activate
+pip install --upgrade pip
+pip install -r requirements.txt
+
+# exit the ssh and do these
+chmod 600 ~/Downloads/ec2-syspare-pass.pem
+scp -i ~/Downloads/ec2-syspare-pass.pem ~/Downloads/rag-service-account.json ubuntu@YOUR_EC2_PUBLIC_IP:/tmp/rag-service-account.json
+sudo mv /tmp/rag-service-account.json /opt/syspare-rag-py/rag-service-account.json
+
+# login back to the ssh
+ssh -i ~/Downloads/ec2-syspare-pass.pem ubuntu@ubuntu@YOUR_EC2_PUBLIC_IP
+
+# move the rag-service-account to the /opt
+sudo mv /tmp/rag-service-account.json /opt/syspare-rag-py/rag-service-account.json
+sudo chown ubuntu:ubuntu /opt/syspare-rag-py/rag-service-account.json
+sudo chmod 600 /opt/syspare-rag-py/rag-service-account.json
+
+# after that set environment
+sudo nano .env
+```
+
+The `.env` contents you used:
+
+```
+PROJECT_ID=fortunaii
+LOCATION=us-central1
+
+GOOGLE_APPLICATION_CREDENTIALS=/opt/syspare-rag-py/rag-service-account.json
+
+PDF_FOLDER=./data
+CACHE_DIR=./cache
+IMAGE_DIR=./cache/images
+
+# S3 (only if you want S3 sync in prod)
+AWS_ACCESS_KEY_ID=...
+AWS_SECRET_ACCESS_KEY=...
+AWS_DEFAULT_REGION=us-east-1
+S3_BUCKET_NAME=your-bucket
+S3_RAG_PREFIX=rag-data
+
+# For EC2 you usually WANT S3 sync, so leave this at 0 or omit it
+DISABLE_S3_SYNC=0
+```
+
+Then you verified the key file and exported extra environment variables directly in the shell:
+
+```
+ls -l /opt/syspare-rag-py/rag-service-account.json
+# do this in the ssh terminal
+export GOOGLE_APPLICATION_CREDENTIALS=/opt/syspare-rag-py/rag-service-account.json
+export GOOGLE_CLOUD_PROJECT="fortuneaii"
+export GOOGLE_CLOUD_LOCATION="us-central1" 
+
+# run the source code and test
+uvicorn rag_server:app --host 0.0.0.0 --port 8000
+
+# if any error with (often libgthread-2.0.so.0), also install:
+sudo apt-get update
+sudo apt-get install -y libglib2.0-0
+
+# if the source code run correctly we will make that autorun
+sudo nano /etc/systemd/system/rag.service
+
+```
+Add this in the `rag.service` file
+```
+[Unit]
+Description=Syspare RAG FastAPI service
+After=network.target
+
+[Service]
+User=ubuntu
+WorkingDirectory=/opt/syspare-rag-py
+Environment=PYTHONUNBUFFERED=1
+# Load env vars from .env
+EnvironmentFile=/opt/syspare-rag-py/.env
+ExecStart=/opt/syspare-rag-py/.venv/bin/uvicorn rag_server:app --host 0.0.0.0 --port 8000
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+```
+Lastly run this command to enable auto start
+```
+sudo systemctl daemon-reload
+sudo systemctl enable rag.service
+sudo systemctl start rag.service
+sudo systemctl status rag.service
+
+```
 
 ---
 

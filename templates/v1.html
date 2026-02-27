@@ -1,0 +1,391 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>RAG Diagnostic v1</title>
+  <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+  <style type="text/tailwindcss">
+
+  </style>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&display=swap" rel="stylesheet" />
+</head>
+<body class="min-h-screen bg-slate-50 text-slate-900 font-sans antialiased">
+  <div class="max-w-6xl mx-auto px-4 sm:px-6 py-8 space-y-8">
+    <header class="flex items-center justify-between gap-4">
+      <div>
+        <h1 class="text-2xl font-semibold tracking-tight">Diagnostic Summary (v1)</h1>
+        <p class="mt-1 text-sm text-slate-500">Structured Gemini answer + required field procedures.</p>
+      </div>
+    </header>
+
+    <!-- Query card -->
+    <section class="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 space-y-4">
+      <div>
+        <label for="v1-q" class="block text-sm font-medium text-slate-700 mb-1.5">Diagnostic question</label>
+        <input
+          id="v1-q"
+          type="text"
+          value="Why is the YM358R double water separator kit showing a rising red float and what should we do?"
+          placeholder="Describe the reported symptom or ask about a procedure..."
+          class="w-full px-4 py-3 rounded-lg border border-slate-300 focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 outline-none transition text-slate-900 placeholder-slate-400"
+        />
+      </div>
+      <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+        <div>
+          <label for="v1-top-k-text" class="block text-sm font-medium text-slate-600 mb-1">Top-K text</label>
+          <input id="v1-top-k-text" type="number" value="8" min="1" max="30"
+            class="w-full px-3 py-2 rounded-lg border border-slate-300 focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 outline-none transition text-slate-900" />
+        </div>
+        <div>
+          <label for="v1-top-k-img" class="block text-sm font-medium text-slate-600 mb-1">Top-K images</label>
+          <input id="v1-top-k-img" type="number" value="6" min="0" max="30"
+            class="w-full px-3 py-2 rounded-lg border border-slate-300 focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 outline-none transition text-slate-900" />
+        </div>
+        <div>
+          <label for="v1-temp" class="block text-sm font-medium text-slate-600 mb-1">Temperature</label>
+          <input id="v1-temp" type="number" value="0.4" min="0" max="2" step="0.1"
+            class="w-full px-3 py-2 rounded-lg border border-slate-300 focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 outline-none transition text-slate-900" />
+        </div>
+      </div>
+      <div>
+        <label for="v1-image" class="block text-sm font-medium text-slate-700 mb-1.5">
+          Optional image (image-based retrieval)
+        </label>
+        <input
+          id="v1-image"
+          type="file"
+          accept="image/*"
+          class="block w-full text-sm text-slate-700 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-medium file:bg-slate-100 file:text-slate-700 hover:file:bg-slate-200"
+        />
+        <p class="mt-1 text-xs text-slate-500">
+          If provided, similar diagrams/tables are retrieved using image embeddings.
+        </p>
+      </div>
+      <div class="pt-1 flex flex-wrap items-center gap-3">
+        <button type="button" id="v1-run-btn"
+          class="inline-flex items-center px-5 py-2.5 rounded-lg bg-emerald-600 text-white font-medium hover:bg-emerald-700 focus:ring-2 focus:ring-emerald-500 focus:ring-offset-2 transition">
+          Run Diagnostic
+        </button>
+        <p id="v1-status" class="text-sm text-slate-500 min-h-6"></p>
+      </div>
+    </section>
+
+    <!-- Results -->
+    <section id="v1-results" class="hidden space-y-6">
+      <!-- Diagnostic summary -->
+      <div class="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 space-y-4">
+        <div class="flex flex-wrap items-center justify-between gap-4">
+          <div class="flex items-center gap-3">
+            <div class="inline-flex items-center justify-center w-9 h-9 rounded-full bg-emerald-100 text-emerald-700">
+              <span class="text-lg">✓</span>
+            </div>
+            <div>
+              <h2 class="text-lg font-semibold tracking-tight">Diagnostic Summary</h2>
+              <p class="text-xs text-slate-500">Grounded in the YM358A/YM358R manual context.</p>
+            </div>
+          </div>
+          <div id="v1-confidence-pill" class="flex flex-col items-end gap-1 text-right">
+            <!-- Filled by JS -->
+          </div>
+        </div>
+        <div id="v1-summary" class="text-sm text-slate-700 leading-relaxed whitespace-pre-wrap"></div>
+      </div>
+
+      <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <!-- Urgency -->
+        <div class="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 space-y-3">
+          <h3 class="text-sm font-semibold tracking-wide text-slate-800 uppercase">Urgency</h3>
+          <div id="v1-urgency-pill"></div>
+          <p id="v1-urgency-reason" class="text-sm text-slate-700 leading-relaxed"></p>
+        </div>
+
+        <!-- Required field procedures -->
+        <div class="lg:col-span-2 bg-white rounded-2xl border border-slate-200 shadow-sm p-6 space-y-4">
+          <h3 class="text-sm font-semibold tracking-wide text-slate-800 uppercase">Required Field Procedures</h3>
+          <div id="v1-actions" class="grid grid-cols-1 md:grid-cols-2 gap-4"></div>
+        </div>
+      </div>
+
+      <!-- Retrieved images -->
+      <div class="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 space-y-3">
+        <h3 class="text-sm font-semibold tracking-wide text-slate-800 uppercase">Retrieved Images</h3>
+        <p class="text-xs text-slate-500">Click an image to view larger.</p>
+        <div id="v1-images" class="grid grid-cols-2 md:grid-cols-3 gap-3"></div>
+      </div>
+
+      <!-- Simple lightbox -->
+      <div id="v1-lightbox" class="fixed inset-0 z-50 hidden" role="dialog" aria-modal="true" aria-label="View image">
+        <div id="v1-lightbox-backdrop" class="absolute inset-0 bg-black/80 backdrop-blur-sm"></div>
+        <div class="absolute inset-0 flex items-center justify-center p-4">
+          <div class="relative max-w-[90vw] max-h-[90vh] flex flex-col items-center">
+            <button type="button" id="v1-lightbox-close"
+              class="absolute -top-10 right-0 flex items-center justify-center w-9 h-9 rounded-full bg-white/10 hover:bg-white/20 text-white transition z-10"
+              aria-label="Close">
+              <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+            <img id="v1-lightbox-img" src="" alt="" class="max-w-full max-h-[85vh] w-auto h-auto object-contain rounded-lg shadow-2xl" />
+            <div id="v1-lightbox-caption" class="mt-3 px-4 py-2 max-w-2xl rounded-lg bg-white/95 text-slate-700 text-sm text-center"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Torque spec -->
+      <div id="v1-torque" class="hidden bg-slate-900 rounded-2xl text-slate-50 px-6 py-4 flex flex-wrap items-center justify-between gap-4">
+        <div>
+          <p class="text-xs font-semibold tracking-wide text-amber-300 uppercase">Engineering Torque Specification</p>
+          <p id="v1-torque-label" class="text-sm font-medium mt-1"></p>
+        </div>
+        <div class="text-right">
+          <p id="v1-torque-nm" class="text-xl font-semibold"></p>
+          <p id="v1-torque-ftlbs" class="text-xs text-slate-300"></p>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <script>
+    (function () {
+      const qEl = document.getElementById('v1-q');
+      const topTextEl = document.getElementById('v1-top-k-text');
+      const topImgEl = document.getElementById('v1-top-k-img');
+      const tempEl = document.getElementById('v1-temp');
+      const runBtn = document.getElementById('v1-run-btn');
+      const statusEl = document.getElementById('v1-status');
+      const resultsEl = document.getElementById('v1-results');
+
+      const imageInput = document.getElementById('v1-image');
+
+      const summaryEl = document.getElementById('v1-summary');
+      const confPillEl = document.getElementById('v1-confidence-pill');
+      const urgPillEl = document.getElementById('v1-urgency-pill');
+      const urgReasonEl = document.getElementById('v1-urgency-reason');
+      const actionsEl = document.getElementById('v1-actions');
+      const torqueEl = document.getElementById('v1-torque');
+      const torqueLabelEl = document.getElementById('v1-torque-label');
+      const torqueNmEl = document.getElementById('v1-torque-nm');
+      const torqueFtLbsEl = document.getElementById('v1-torque-ftlbs');
+
+      const imagesEl = document.getElementById('v1-images');
+      const lb = document.getElementById('v1-lightbox');
+      const lbImg = document.getElementById('v1-lightbox-img');
+      const lbCaption = document.getElementById('v1-lightbox-caption');
+      const lbClose = document.getElementById('v1-lightbox-close');
+      const lbBackdrop = document.getElementById('v1-lightbox-backdrop');
+
+      function setStatus(msg, isError) {
+        if (!statusEl) return;
+        statusEl.textContent = msg || '';
+        statusEl.style.color = isError ? '#b91c1c' : '#64748b';
+      }
+
+      function renderConfidence(conf) {
+        if (!confPillEl) return;
+        const score = typeof conf.score === 'number' ? conf.score : null;
+        const label = conf.label || '';
+        const pct = score != null ? Math.round(score * 1000) / 10 : null;
+
+        confPillEl.innerHTML = '';
+        const line1 = document.createElement('div');
+        line1.className = 'text-xs font-medium text-slate-500';
+        line1.textContent = 'Confidence Score';
+
+        const pill = document.createElement('div');
+        pill.className = 'inline-flex items-center mt-1 px-3 py-1 rounded-full text-xs font-semibold bg-emerald-100 text-emerald-800';
+        pill.textContent = (pct != null ? pct.toFixed(1) + '% ' : '') + (label || '');
+
+        confPillEl.appendChild(line1);
+        confPillEl.appendChild(pill);
+      }
+
+      function renderUrgency(urg) {
+        if (!urgPillEl || !urgReasonEl) return;
+        const label = (urg.label || '').toLowerCase();
+        let bg = 'bg-slate-100 text-slate-800 border-slate-200';
+        let title = 'Normal';
+        if (label.includes('critical')) {
+          bg = 'bg-rose-50 text-rose-700 border-rose-200';
+          title = 'Urgency: Critical';
+        } else if (label.includes('warn')) {
+          bg = 'bg-amber-50 text-amber-700 border-amber-200';
+          title = 'Urgency: Warning';
+        } else if (label.includes('info')) {
+          bg = 'bg-sky-50 text-sky-700 border-sky-200';
+          title = 'Urgency: Info';
+        }
+
+        urgPillEl.innerHTML = '<span class="inline-flex items-center px-3 py-1 rounded-full text-xs font-semibold border ' +
+          bg + '">' + (urg.label || 'normal') + '</span>';
+        urgReasonEl.textContent = urg.reason || '';
+      }
+
+      function renderActions(actions) {
+        if (!actionsEl) return;
+        actionsEl.innerHTML = '';
+        (actions || []).forEach(function (a, i) {
+          const id = a.id || ('ACTION ' + String(i + 1).padStart(2, '0'));
+          const title = a.title || 'Action ' + (i + 1);
+          const desc = a.description || '';
+          const card = document.createElement('div');
+          card.className = 'rounded-xl border border-slate-200 bg-slate-50 p-4 space-y-2';
+          card.innerHTML = '' +
+            '<div class="text-xs font-semibold tracking-wide text-emerald-700 uppercase">' + id + '</div>' +
+            '<div class="text-sm font-semibold text-slate-900">' + title + '</div>' +
+            '<p class="text-sm text-slate-700 leading-relaxed whitespace-pre-wrap">' + desc + '</p>';
+          actionsEl.appendChild(card);
+        });
+      }
+
+      function renderTorque(torque) {
+        if (!torqueEl || !torqueLabelEl || !torqueNmEl || !torqueFtLbsEl) return;
+        if (!torque) {
+          torqueEl.classList.add('hidden');
+          return;
+        }
+        torqueEl.classList.remove('hidden');
+        torqueLabelEl.textContent = torque.label || torque.raw || '';
+        const nm = torque.value_nm;
+        const ft = torque.value_ft_lbs;
+        torqueNmEl.textContent = nm != null ? nm + ' N·m' : '';
+        torqueFtLbsEl.textContent = ft != null ? ft + ' ft-lbs' : (torque.raw || '');
+      }
+
+      function renderImages(images) {
+        if (!imagesEl) return;
+        imagesEl.innerHTML = '';
+        (images || []).forEach(function (img) {
+          const captionShort = img.caption && img.caption.length > 80
+            ? img.caption.slice(0, 80) + '…'
+            : (img.caption || '');
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'rag-image-thumb text-left rounded-lg border border-slate-200 overflow-hidden bg-slate-50 hover:ring-2 hover:ring-emerald-500/50 hover:border-emerald-400 transition cursor-pointer focus:outline-none focus:ring-2 focus:ring-emerald-500';
+          btn.dataset.src = img.img_url;
+          btn.dataset.caption = img.caption || '';
+          btn.dataset.doc = img.doc || '';
+          btn.dataset.page = img.page != null ? String(img.page) : '';
+          btn.innerHTML =
+            '<img src="' + img.img_url + '" alt="" class="w-full aspect-auto object-cover pointer-events-none" loading="lazy" />' +
+            '<div class="p-2 space-y-1">' +
+            '  <div class="flex flex-wrap gap-1.5">' +
+            (img.doc ? '<span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-slate-200 text-slate-700">' + img.doc + '</span>' : '') +
+            (img.page != null ? '<span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-slate-200 text-slate-700">p' + img.page + '</span>' : '') +
+            (img.score != null ? '<span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-emerald-100 text-emerald-800">' + img.score.toFixed(3) + '</span>' : '') +
+            '  </div>' +
+            '  <p class="text-xs text-slate-500 overflow-hidden text-left" style="display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;">' + captionShort + '</p>' +
+            '</div>';
+          imagesEl.appendChild(btn);
+        });
+      }
+
+      function setupLightbox() {
+        if (!lb || !lbImg || !lbCaption || !lbClose || !lbBackdrop || !imagesEl) return;
+        function open(src, caption, doc, page) {
+          lbImg.src = src;
+          const parts = [];
+          if (doc) parts.push(doc);
+          if (page) parts.push('p' + page);
+          if (caption) parts.push(caption);
+          lbCaption.textContent = parts.join(' · ');
+          lb.classList.remove('hidden');
+          document.body.style.overflow = 'hidden';
+        }
+        function close() {
+          lb.classList.add('hidden');
+          document.body.style.overflow = '';
+        }
+        imagesEl.addEventListener('click', function (e) {
+          const target = e.target || e.srcElement;
+          const btn = target && target.closest ? target.closest('.rag-image-thumb') : null;
+          if (!btn) return;
+          e.preventDefault();
+          open(
+            btn.dataset.src || '',
+            btn.dataset.caption || '',
+            btn.dataset.doc || '',
+            btn.dataset.page || ''
+          );
+        });
+        lbClose.addEventListener('click', close);
+        lbBackdrop.addEventListener('click', close);
+        document.addEventListener('keydown', function (e) {
+          if (e.key === 'Escape' && !lb.classList.contains('hidden')) close();
+        });
+      }
+
+      async function run() {
+        if (!qEl || !runBtn) return;
+        const q = qEl.value.trim();
+        if (!q) {
+          setStatus('Enter a question.', true);
+          return;
+        }
+
+        const payload = {
+          question: q,
+          top_k_text: topTextEl ? parseInt(topTextEl.value, 10) || 8 : 8,
+          top_k_img: topImgEl ? parseInt(topImgEl.value, 10) || 6 : 6,
+          temp: tempEl ? parseFloat(tempEl.value) || 0.4 : 0.4,
+        };
+
+        runBtn.disabled = true;
+        runBtn.classList.add('opacity-70');
+        setStatus('Running diagnostic…', false);
+        if (resultsEl) resultsEl.classList.add('hidden');
+
+        try {
+          const imgInputEl = imageInput;
+          const file = (imgInputEl && imgInputEl.files && imgInputEl.files[0]) || null;
+          const useUpload = !!file;
+
+          const res = await fetch(useUpload ? '/api/v1/diagnose-upload' : '/api/v1/diagnose', {
+            method: 'POST',
+            headers: useUpload ? { Accept: 'application/json' } : { 'Content-Type': 'application/json', Accept: 'application/json' },
+            body: useUpload
+              ? (() => {
+                  const fd = new FormData();
+                  fd.set('question', payload.question);
+                  fd.set('top_k_text', String(payload.top_k_text));
+                  fd.set('top_k_img', String(payload.top_k_img));
+                  fd.set('temp', String(payload.temp));
+                  if (file) fd.set('image', file, file.name);
+                  return fd;
+                })()
+              : JSON.stringify(payload),
+          });
+          const data = await res.json();
+          if (!res.ok) {
+            setStatus(data.detail || data.error || ('Error ' + res.status), true);
+            return;
+          }
+
+          const d = data.diagnostic || {};
+          const imgs = data.images || [];
+          if (summaryEl) summaryEl.textContent = d.summary || '';
+          renderConfidence(d.confidence || {});
+          renderUrgency(d.urgency || {});
+          renderActions(d.actions || []);
+          renderTorque(d.torque_spec || null);
+          renderImages(imgs);
+          setupLightbox();
+
+          if (resultsEl) resultsEl.classList.remove('hidden');
+          setStatus('', false);
+        } catch (err) {
+          setStatus(err instanceof Error ? err.message : 'Request failed', true);
+        } finally {
+          runBtn.disabled = false;
+          runBtn.classList.remove('opacity-70');
+        }
+      }
+
+      runBtn?.addEventListener('click', run);
+    })();
+  </script>
+</body>
+</html>
+
