@@ -6,7 +6,7 @@ services:
     name: syspare-rag-py
     runtime: python
 
-    buildCommand: pip install -r requirements.txt
+    buildCommand: apt-get update && apt-get install -y tesseract-ocr tesseract-ocr-eng tesseract-ocr-mya && pip install -r requirements.txt
     startCommand: gunicorn rag_server:app --workers 1 --worker-class uvicorn.workers.UvicornWorker --bind 0.0.0.0:$PORT
 
     envVars:

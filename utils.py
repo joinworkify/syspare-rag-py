@@ -10,7 +10,7 @@ try:
 except ImportError:
     display = lambda x: None  # no-op when not in Jupyter (e.g. on Render)
 import PIL
-import fitz
+import pymupdf as fitz
 import numpy as np
 import pandas as pd
 import requests

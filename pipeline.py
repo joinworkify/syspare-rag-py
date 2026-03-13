@@ -81,6 +81,7 @@ class RagConfig:
     enable_ocr_fallback: bool = True
     ocr_min_chars: int = 40  # if extracted text < this, OCR that page
     ocr_dpi: int = 200
+    # Tesseract language(s). Use '+' to combine, e.g. "mya+eng".
     ocr_lang: str = "eng"
 
     # OCR chunking (simple char-based)
@@ -534,6 +535,21 @@ class MultimodalRAGPipeline:
     # -----------------------------
     # Answering
     # -----------------------------
+    def _answer_language_line(self, answer_language: str) -> str:
+        """
+        Returns a short instruction forcing output language.
+        Supported values:
+          - "auto" (default): no constraint
+          - "en": English
+          - "my" | "mm": Myanmar (Burmese)
+        """
+        lang = (answer_language or "auto").strip().lower()
+        if lang in ("en", "english"):
+            return "Answer in English.\n"
+        if lang in ("my", "mm", "myanmar", "burmese"):
+            return "Answer in Myanmar (Burmese).\n"
+        return ""
+
     def answer_text_query(
         self,
         query: str,
@@ -541,12 +557,15 @@ class MultimodalRAGPipeline:
         top_n: int = 3,
         temperature: float = 0.2,
         stream: bool = True,
+        answer_language: str = "auto",
     ) -> Dict[str, Any]:
         matches = self.search_text(query, top_n=top_n, chunk_text=True)
         context = "\n".join([value["chunk_text"] for _, value in matches.items()])
 
+        lang_line = self._answer_language_line(answer_language)
         instruction = (
             "Answer the question with the given context.\n"
+            f"{lang_line}"
             'If the information is not available in the context, just return "not available in the context".\n'
             f"Question: {query}\n"
             f"Context: {context}\n"
@@ -575,6 +594,7 @@ class MultimodalRAGPipeline:
         top_n: int = 3,
         temperature: float = 1.0,
         stream: bool = True,
+        answer_language: str = "auto",
     ) -> Dict[str, Any]:
         matches = self.search_images_by_description_text(query, top_n=top_n)
         top = matches[0]
@@ -582,9 +602,11 @@ class MultimodalRAGPipeline:
             f"Image: {top['image_object']}\nDescription: {top['image_description']}\n"
         )
 
+        lang_line = self._answer_language_line(answer_language)
         instruction = (
             "Answer the question in JSON format with the given context of Image and its Description. "
             "Only include value.\n"
+            f"{lang_line}"
             f"Question: {query}\n"
             f"Context: {context}\n"
             "Answer:\n"
@@ -615,6 +637,7 @@ class MultimodalRAGPipeline:
         temperature: float = 1.0,
         stream: bool = True,
         include_step_by_step: bool = True,
+        answer_language: str = "auto",
     ) -> Dict[str, Any]:
         text_matches = self.search_text(query, top_n=top_n_text, chunk_text=True)
         image_matches = self.search_images_by_description_text(
@@ -635,6 +658,7 @@ class MultimodalRAGPipeline:
                 ]
             )
 
+        lang_line = self._answer_language_line(answer_language)
         reasoning_line = (
             "Make sure to think thoroughly before answering the question and put the necessary steps "
             "to arrive at the answer in bullet points for easy explainability.\n"
@@ -644,6 +668,7 @@ class MultimodalRAGPipeline:
 
         prompt = (
             "Instructions: Compare the images and the text provided as Context: to answer multiple Question:\n"
+            f"{lang_line}"
             f"{reasoning_line}"
             'If unsure, respond, "Not enough context to answer".\n\n'
             "Context:\n"
@@ -704,6 +729,7 @@ class MultimodalRAGPipeline:
         top_n_images: int = 6,
         temperature: float = 0.4,
         stream: bool = False,
+        answer_language: str = "auto",
     ) -> Dict[str, Any]:
         """
         Return a structured diagnostic JSON answer suitable for a dashboard UI.
@@ -739,9 +765,11 @@ class MultimodalRAGPipeline:
                 ]
             )
 
+        lang_line = self._answer_language_line(answer_language)
         prompt = (
             "You are a service manual assistant. Using ONLY the following manual context "
             "(text + image descriptions), create a structured diagnostic summary in JSON.\n\n"
+            f"{lang_line}"
             "JSON schema (keys and nesting):\n"
             "{\n"
             '  "summary": string,                       // one-paragraph diagnostic summary\n'
