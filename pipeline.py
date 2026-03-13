@@ -670,7 +670,7 @@ class MultimodalRAGPipeline:
             "Instructions: Compare the images and the text provided as Context: to answer multiple Question:\n"
             f"{lang_line}"
             f"{reasoning_line}"
-            'If unsure, respond, "Not enough context to answer".\n\n'
+            # 'If unsure, respond, "Not enough context to answer".\n\n'
             "Context:\n"
             " - Text Context:\n"
             f"{final_context_text}\n"
