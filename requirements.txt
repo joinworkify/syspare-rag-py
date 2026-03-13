@@ -9,6 +9,7 @@ pillow
 pymupdf
 pypdf
 pytesseract
+python-dotenv
 python-multipart
 uvicorn[standard]
 vertexai

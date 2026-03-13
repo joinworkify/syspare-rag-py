@@ -50,6 +50,18 @@
             class="w-full px-3 py-2 rounded-lg border border-slate-300 focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 outline-none transition text-slate-900" />
         </div>
       </div>
+      <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+        <div>
+          <label for="v1-answer-language" class="block text-sm font-medium text-slate-600 mb-1">Answer language</label>
+          <select id="v1-answer-language"
+            class="w-full px-3 py-2 rounded-lg border border-slate-300 focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 outline-none transition text-slate-900 bg-white">
+            <option value="auto" selected>Auto (follow question)</option>
+            <option value="en">English</option>
+            <option value="my">Myanmar</option>
+          </select>
+          <p class="mt-1 text-xs text-slate-500">This controls the output language (values inside the JSON).</p>
+        </div>
+      </div>
       <div>
         <label for="v1-image" class="block text-sm font-medium text-slate-700 mb-1.5">
           Optional image (image-based retrieval)
@@ -154,6 +166,7 @@
       const topTextEl = document.getElementById('v1-top-k-text');
       const topImgEl = document.getElementById('v1-top-k-img');
       const tempEl = document.getElementById('v1-temp');
+      const answerLangEl = document.getElementById('v1-answer-language');
       const runBtn = document.getElementById('v1-run-btn');
       const statusEl = document.getElementById('v1-status');
       const resultsEl = document.getElementById('v1-results');
@@ -330,6 +343,7 @@
           top_k_text: topTextEl ? parseInt(topTextEl.value, 10) || 8 : 8,
           top_k_img: topImgEl ? parseInt(topImgEl.value, 10) || 6 : 6,
           temp: tempEl ? parseFloat(tempEl.value) || 0.4 : 0.4,
+          answer_language: answerLangEl ? (answerLangEl.value || 'auto') : 'auto',
         };
 
         runBtn.disabled = true;
@@ -352,6 +366,7 @@
                   fd.set('top_k_text', String(payload.top_k_text));
                   fd.set('top_k_img', String(payload.top_k_img));
                   fd.set('temp', String(payload.temp));
+                  fd.set('answer_language', String(payload.answer_language || 'auto'));
                   if (file) fd.set('image', file, file.name);
                   return fd;
                 })()

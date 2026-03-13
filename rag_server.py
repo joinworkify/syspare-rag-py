@@ -47,12 +47,14 @@ def _env(key: str, default: str) -> str:
 PDF_FOLDER = _env("PDF_FOLDER", "./data/")
 CACHE_DIR = _env("CACHE_DIR", "./cache")
 IMAGE_DIR = _env("IMAGE_DIR", "./cache/images")  # must match RagConfig.image_save_dir
+OCR_LANG = _env("OCR_LANG", "mya+eng")
 
 PROJECT_ID = _env("PROJECT_ID", "fortunaii")
 LOCATION = _env("LOCATION", "us-central1")
 
 # Allow disabling S3 sync for local/dev (set DISABLE_S3_SYNC=1).
 DISABLE_S3_SYNC = _env("DISABLE_S3_SYNC", "0")
+INIT_RAG_ON_STARTUP = _env("INIT_RAG_ON_STARTUP", "0")
 
 
 # -----------------------------
@@ -139,7 +141,7 @@ def _get_rag() -> MultimodalRAGPipeline:
             enable_ocr_fallback=True,
             ocr_min_chars=40,
             ocr_dpi=200,
-            ocr_lang="eng",
+            ocr_lang=OCR_LANG,
         )
         rag_instance = MultimodalRAGPipeline(cfg)
         # Try to load cache first; if missing, build from PDFs.
@@ -166,6 +168,9 @@ def _get_rag() -> MultimodalRAGPipeline:
 @app.on_event("startup")
 def _ensure_rag():
     """Optionally init pipeline at startup (fails gracefully)."""
+    if INIT_RAG_ON_STARTUP != "1":
+        # Keep startup fast; RAG will be initialized lazily on first query/build-cache.
+        return
     try:
         _get_rag()
     except Exception as e:
@@ -258,6 +263,8 @@ class QueryRequest(BaseModel):
     top_k_text: int = 5
     top_k_img: int = 6
     temp: float = 0.5
+    # "auto" | "en" | "my"
+    answer_language: str = "auto"
 
 
 class QueryResponse(BaseModel):
@@ -281,6 +288,8 @@ class QueryWithOptionalImageRequest(BaseModel):
     top_k_img: int = 1
     temp: float = 0.2
     embedding_size: int = 128
+    # "auto" | "en" | "my"
+    answer_language: str = "auto"
 
 
 class DiagnosticAction(BaseModel):
@@ -311,6 +320,8 @@ class DiagnosticPayload(BaseModel):
     top_k_text: int = 10
     top_k_img: int = 6
     temp: float = 0.4
+    # "auto" | "en" | "my"
+    answer_language: str = "auto"
 
 
 class DiagnosticEnvelope(BaseModel):
@@ -424,7 +435,7 @@ def api_build_cache():
             enable_ocr_fallback=True,
             ocr_min_chars=40,
             ocr_dpi=200,
-            ocr_lang="eng",
+            ocr_lang=OCR_LANG,
         )
         rag_instance = MultimodalRAGPipeline(cfg)
         rag_instance.build_metadata(
@@ -505,6 +516,7 @@ def api_query(payload: QueryRequest):
         temperature=payload.temp,
         stream=False,
         include_step_by_step=False,
+        answer_language=payload.answer_language,
     )
     answer = out["response"]
     if not isinstance(answer, str):
@@ -553,6 +565,7 @@ def api_query_with_optional_image(payload: QueryWithOptionalImageRequest):
         top_n=payload.top_k_text,
         temperature=payload.temp,
         stream=False,
+        answer_language=payload.answer_language,
     )
     answer = text_result.get("response", "")
     if not isinstance(answer, str):
@@ -598,6 +611,7 @@ async def api_query_upload(
     top_k_text: int = Form(5),
     top_k_img: int = Form(1),
     temp: float = Form(0.2),
+    answer_language: str = Form("auto"),
     image: Optional[UploadFile] = File(None),
 ):
     """
@@ -622,6 +636,7 @@ async def api_query_upload(
         top_n=top_k_text,
         temperature=temp,
         stream=False,
+        answer_language=answer_language,
     )
     answer = text_result.get("response", "")
     if not isinstance(answer, str):
@@ -686,6 +701,7 @@ def api_v1_diagnose(payload: DiagnosticPayload):
         top_n_images=payload.top_k_img,
         temperature=payload.temp,
         stream=False,
+        answer_language=payload.answer_language,
     )
 
     parsed = out.get("response_parsed") or {}
@@ -758,6 +774,7 @@ async def api_v1_diagnose_upload(
     top_k_text: int = Form(10),
     top_k_img: int = Form(6),
     temp: float = Form(0.4),
+    answer_language: str = Form("auto"),
     image: Optional[UploadFile] = File(None),
 ):
     """
@@ -802,6 +819,7 @@ async def api_v1_diagnose_upload(
         top_n_images=top_k_img,
         temperature=temp,
         stream=False,
+        answer_language=answer_language,
     )
     parsed = out.get("response_parsed") or {}
 
@@ -871,6 +889,7 @@ def home():
         top_k_text=5,
         top_k_img=6,
         temp=0.5,
+        answer_language="auto",
         answer="",
         texts=[],
         images=[],
@@ -885,6 +904,7 @@ def query(
     top_k_text: int = Form(5),
     top_k_img: int = Form(6),
     temp: float = Form(0.5),
+    answer_language: str = Form("auto"),
     image: Optional[UploadFile] = File(None),
 ):
     try:
@@ -896,6 +916,7 @@ def query(
             top_k_text=top_k_text,
             top_k_img=top_k_img,
             temp=temp,
+            answer_language=answer_language,
             answer=f"RAG not available: {e}\n\nSet PROJECT_ID, LOCATION, GOOGLE_APPLICATION_CREDENTIALS in Render and ensure data/cache exist.",
             texts=[],
             images=[],
@@ -921,7 +942,11 @@ def query(
 
         # Answer from text-side for consistency with the API path
         text_result = rag.answer_text_query(
-            q, top_n=top_k_text, temperature=temp, stream=False
+            q,
+            top_n=top_k_text,
+            temperature=temp,
+            stream=False,
+            answer_language=answer_language,
         )
         answer = text_result.get("response", "")
         if not isinstance(answer, str):
@@ -937,6 +962,7 @@ def query(
             temperature=temp,
             stream=False,
             include_step_by_step=False,
+            answer_language=answer_language,
         )
         answer = out["response"]
         if not isinstance(answer, str):
@@ -948,6 +974,7 @@ def query(
         top_k_text=top_k_text,
         top_k_img=top_k_img,
         temp=temp,
+        answer_language=answer_language,
         answer=answer,
         texts=_normalize_text_matches(text_matches),
         images=_normalize_image_matches(image_matches),

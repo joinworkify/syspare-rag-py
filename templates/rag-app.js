@@ -121,6 +121,7 @@ async function runQuery() {
   const topKTextInput = el('api-top-k-text');
   const topKImgInput = el('api-top-k-img');
   const tempInput = el('api-temp');
+  const answerLangInput = el('api-answer-language');
   const runBtn = el('api-run-btn');
   const statusEl = el('api-status');
   const resultsEl = el('api-results');
@@ -136,6 +137,7 @@ async function runQuery() {
     top_k_text: topKTextInput ? parseInt(topKTextInput.value, 10) || 5 : 5,
     top_k_img: topKImgInput ? parseInt(topKImgInput.value, 10) || 6 : 6,
     temp: tempInput ? parseFloat(tempInput.value) || 0.5 : 0.5,
+    answer_language: answerLangInput && 'value' in answerLangInput ? (answerLangInput.value || 'auto') : 'auto',
   };
   runBtn.setAttribute('disabled', 'true');
   runBtn.classList.add('opacity-70');
@@ -155,6 +157,7 @@ async function runQuery() {
             fd.set('top_k_text', String(payload.top_k_text ?? 5));
             fd.set('top_k_img', String(payload.top_k_img ?? 6));
             fd.set('temp', String(payload.temp ?? 0.5));
+            fd.set('answer_language', String(payload.answer_language ?? 'auto'));
             if (file) fd.set('image', file, file.name);
             return fd;
           })(),
