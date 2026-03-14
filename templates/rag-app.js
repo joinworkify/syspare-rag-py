@@ -141,7 +141,7 @@ async function runQuery() {
   };
   runBtn.setAttribute('disabled', 'true');
   runBtn.classList.add('opacity-70');
-  statusEl.textContent = 'Running RAG…';
+  statusEl.textContent = 'Running RAG… (first request can take 1-3 min while RAG loads)';
   statusEl.style.color = '#64748b';
   if (resultsEl) resultsEl.classList.add('hidden');
   try {
