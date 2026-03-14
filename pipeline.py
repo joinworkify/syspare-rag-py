@@ -22,7 +22,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
-import fitz  # pymupdf
+import pymupdf as fitz  # pymupdf
 import vertexai
 from vertexai.generative_models import GenerationConfig, GenerativeModel
 
@@ -241,7 +241,9 @@ class MultimodalRAGPipeline:
             i = max(j - overlap, j)
         return [c for c in chunks if c]
 
-    def _render_page(self, page: fitz.Page, dpi: int) -> "PILImage.Image": # pyright: ignore[reportInvalidTypeForm]
+    def _render_page(
+        self, page: fitz.Page, dpi: int
+    ) -> "PILImage.Image":  # pyright: ignore[reportInvalidTypeForm]
         if PILImage is None:
             raise RuntimeError("PIL not installed. pip install pillow")
         zoom = dpi / 72.0
