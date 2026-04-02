@@ -16,6 +16,7 @@ from pydantic import BaseModel
 from vertexai.generative_models import GenerationConfig
 
 from pipeline import RagConfig, MultimodalRAGPipeline
+from utils import get_gemini_response
 
 load_dotenv()
 
@@ -240,6 +241,45 @@ def _normalize_text_matches(
     return out
 
 
+def _rewrite_myanmar_to_english_query(
+    rag: MultimodalRAGPipeline, myanmar_text: str
+) -> str:
+    """Rewrite Myanmar user text into English suited for manual embedding search."""
+    instruction = (
+        "Rewrite the following user question from Myanmar (Burmese) into a short, clear English search query "
+        "suited for semantic search over a technical/service manual knowledge base. "
+        "Preserve symptoms, part names, procedures, torque values, and numbers. "
+        "Output only the English query text, with no explanation, labels, or quotation marks.\n\n"
+        f"User question:\n{myanmar_text}\n\nEnglish query:"
+    )
+    out = get_gemini_response(
+        rag.text_model,
+        model_input=instruction,
+        stream=False,
+        generation_config=GenerationConfig(temperature=0.2, max_output_tokens=1024),
+    )
+    return (out or "").strip()
+
+
+def _english_answer_to_myanmar(
+    rag: MultimodalRAGPipeline, english_answer: str
+) -> str:
+    """Translate/summarize the English RAG answer into Myanmar for the user."""
+    instruction = (
+        "Translate the following English technical answer into natural Myanmar (Burmese). "
+        "Preserve the full meaning; keep technical terms accurate (use common Roman abbreviations for parts where helpful). "
+        "Output only Myanmar (Burmese) script text, with no English preamble or labels.\n\n"
+        f"English answer:\n{english_answer}\n\nMyanmar answer:"
+    )
+    out = get_gemini_response(
+        rag.text_model,
+        model_input=instruction,
+        stream=False,
+        generation_config=GenerationConfig(temperature=0.2, max_output_tokens=4096),
+    )
+    return (out or "").strip()
+
+
 # -----------------------------
 # API models (JSON RAG API)
 # -----------------------------
@@ -271,6 +311,24 @@ class QueryResponse(BaseModel):
     answer: str
     texts: List[TextChunk]
     images: List[ImageMatch]
+
+
+class MyanmarQueryRequest(BaseModel):
+    """Myanmar (Burmese) question; rewritten to English internally for retrieval."""
+
+    question: str
+    top_k_text: int = 5
+    top_k_img: int = 6
+    temp: float = 0.5
+    include_intermediate_english: bool = False
+
+
+class MyanmarQueryResponse(BaseModel):
+    answer: str
+    texts: List[TextChunk]
+    images: List[ImageMatch]
+    english_query: Optional[str] = None
+    english_answer: Optional[str] = None
 
 
 class QueryWithOptionalImageRequest(BaseModel):
@@ -370,6 +428,24 @@ def app_js():
     path = TEMPLATES_DIR / "rag-app.js"
     if not path.exists():
         return JSONResponse({"error": "rag-app.js not found"}, status_code=404)
+    return FileResponse(path, media_type="application/javascript")
+
+
+@app.get("/app-myanmar", response_class=HTMLResponse)
+def app_myanmar_page():
+    """Myanmar-input RAG viewer (uses POST /api/query-myanmar)."""
+    path = TEMPLATES_DIR / "app-myanmar.html"
+    if not path.exists():
+        return HTMLResponse("<p>app-myanmar.html not found</p>", status_code=404)
+    return FileResponse(path, media_type="text/html")
+
+
+@app.get("/app/rag-myanmar-app.js")
+def app_myanmar_js():
+    """Serve the Myanmar-input RAG app script."""
+    path = TEMPLATES_DIR / "rag-myanmar-app.js"
+    if not path.exists():
+        return JSONResponse({"error": "rag-myanmar-app.js not found"}, status_code=404)
     return FileResponse(path, media_type="application/javascript")
 
 
@@ -529,6 +605,90 @@ def api_query(payload: QueryRequest):
         answer=answer,
         texts=[TextChunk(**t) for t in texts_norm],
         images=[ImageMatch(**img) for img in images_norm],
+    )
+
+
+@app.post("/api/query-myanmar", response_model=MyanmarQueryResponse)
+def api_query_myanmar(payload: MyanmarQueryRequest):
+    """
+    Accept a Myanmar question, rewrite to English for vector search, run the same
+    multimodal RAG as /api/query (English answer), then translate the answer to Myanmar.
+
+    Example:
+
+        curl -sS -X POST "http://127.0.0.1:8000/api/query-myanmar" \\
+          -H "Content-Type: application/json" \\
+          -d '{"question":"<Myanmar text>","top_k_text":5,"top_k_img":6,"temp":0.5,"include_intermediate_english":true}'
+    """
+    q_raw = (payload.question or "").strip()
+    if not q_raw:
+        return JSONResponse(
+            {"detail": "question must be non-empty."},
+            status_code=400,
+        )
+
+    try:
+        rag = _get_rag()
+    except RuntimeError as e:
+        return JSONResponse(
+            {
+                "detail": f"RAG not available: {e}. "
+                "Check PROJECT_ID / LOCATION / GOOGLE_APPLICATION_CREDENTIALS and data/cache.",
+            },
+            status_code=503,
+        )
+
+    english_query = _rewrite_myanmar_to_english_query(rag, q_raw)
+    if not english_query or english_query == "Exception occurred":
+        return JSONResponse(
+            {"detail": "Failed to rewrite question to English. Try again or check Vertex AI / Gemini."},
+            status_code=503,
+        )
+
+    text_matches = rag.search_text(
+        english_query,
+        top_n=payload.top_k_text,
+        chunk_text=True,
+    )
+    image_matches = rag.search_images_by_description_text(
+        english_query,
+        top_n=payload.top_k_img,
+    )
+    out = rag.answer_multimodal_query(
+        english_query,
+        top_n_text=payload.top_k_text,
+        top_n_images=payload.top_k_img,
+        temperature=payload.temp,
+        stream=False,
+        include_step_by_step=False,
+        answer_language="en",
+    )
+    english_answer = out["response"]
+    if not isinstance(english_answer, str):
+        english_answer = str(english_answer)
+
+    if not english_answer.strip() or english_answer.strip() == "Exception occurred":
+        return JSONResponse(
+            {"detail": "RAG answer generation failed. Try again or check Vertex AI / Gemini."},
+            status_code=503,
+        )
+
+    myanmar_answer = _english_answer_to_myanmar(rag, english_answer)
+    if not myanmar_answer or myanmar_answer == "Exception occurred":
+        return JSONResponse(
+            {"detail": "Failed to translate answer to Myanmar. Try again or check Vertex AI / Gemini."},
+            status_code=503,
+        )
+
+    texts_norm = _normalize_text_matches(text_matches)
+    images_norm = _normalize_image_matches(image_matches)
+
+    return MyanmarQueryResponse(
+        answer=myanmar_answer,
+        texts=[TextChunk(**t) for t in texts_norm],
+        images=[ImageMatch(**img) for img in images_norm],
+        english_query=english_query if payload.include_intermediate_english else None,
+        english_answer=english_answer if payload.include_intermediate_english else None,
     )
 
 
