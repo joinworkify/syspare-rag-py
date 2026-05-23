@@ -39,6 +39,11 @@ import re
 
 from syspare_rag.config import RagConfig
 from syspare_rag.indexing.embedder import VertexTextEmbedder
+from syspare_rag.indexing.validation import (
+    inferred_image_pixel_dim,
+    validate_image_index,
+    validate_text_index,
+)
 
 try:
     from PIL import Image as PILImage
@@ -144,7 +149,13 @@ class MultimodalRAGPipeline:
             "image_csv": str(image_csv),
         }
 
-    def load_cache(self, cache_dir: str, *, rebuild_image_objects: bool = True) -> bool:
+    def load_cache(
+        self,
+        cache_dir: str,
+        *,
+        rebuild_image_objects: bool = True,
+        validate: bool = True,
+    ) -> bool:
         cache_path = Path(cache_dir)
         text_pkl = cache_path / "text_metadata_df.pkl"
         image_pkl = cache_path / "image_metadata_df.pkl"
@@ -155,10 +166,37 @@ class MultimodalRAGPipeline:
         self.text_metadata_df = pd.read_pickle(text_pkl)
         self.image_metadata_df = pd.read_pickle(image_pkl)
 
+        if validate:
+            self._validate_loaded_cache()
+
         if rebuild_image_objects:
             self._rebuild_image_objects_from_paths()
 
         return True
+
+    def _validate_loaded_cache(self) -> None:
+        """Guard against P0-1 (mixed embedding dimensions) on cache load."""
+        if self.text_metadata_df is not None:
+            validate_text_index(
+                self.text_metadata_df,
+                text_embedding_dim=self.config.text_embedding_dimension,
+            )
+        if self.image_metadata_df is not None:
+            cached_pixel_dim = inferred_image_pixel_dim(self.image_metadata_df)
+            validate_image_index(
+                self.image_metadata_df,
+                text_embedding_dim=self.config.text_embedding_dimension,
+                image_embedding_dim=cached_pixel_dim,
+            )
+            if (
+                cached_pixel_dim is not None
+                and cached_pixel_dim != self.config.embedding_size
+            ):
+                print(
+                    f"[pipeline] image pixel embedding dim in cache is "
+                    f"{cached_pixel_dim} but RagConfig.embedding_size="
+                    f"{self.config.embedding_size}; using cached dim for queries."
+                )
 
     def _rebuild_image_objects_from_paths(self) -> None:
         if PILImage is None or self.image_metadata_df is None:
@@ -411,6 +449,8 @@ class MultimodalRAGPipeline:
 
         self.text_metadata_df = text_df
         self.image_metadata_df = image_df
+
+        self._validate_loaded_cache()
 
         if cache_dir:
             self.save_cache(cache_dir)
