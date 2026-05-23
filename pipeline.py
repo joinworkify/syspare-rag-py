@@ -544,12 +544,15 @@ class MultimodalRAGPipeline:
           - "auto" (default): no constraint
           - "en": English
           - "my" | "mm": Myanmar (Burmese)
+          - "ja" | "jp": Japanese
         """
         lang = (answer_language or "auto").strip().lower()
         if lang in ("en", "english"):
             return "Answer in English.\n"
         if lang in ("my", "mm", "myanmar", "burmese"):
             return "Answer in Myanmar (Burmese).\n"
+        if lang in ("ja", "jp", "japanese"):
+            return "Answer in Japanese.\n"
         return ""
 
     def answer_text_query(
