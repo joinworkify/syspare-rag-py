@@ -280,6 +280,45 @@ def _english_answer_to_myanmar(
     return (out or "").strip()
 
 
+def _rewrite_japanese_to_english_query(
+    rag: MultimodalRAGPipeline, japanese_text: str
+) -> str:
+    """Rewrite Japanese user text into English suited for manual embedding search."""
+    instruction = (
+        "Rewrite the following user question from Japanese into a short, clear English search query "
+        "suited for semantic search over a technical/service manual knowledge base. "
+        "Preserve symptoms, part names, procedures, torque values, and numbers. "
+        "Output only the English query text, with no explanation, labels, or quotation marks.\n\n"
+        f"User question:\n{japanese_text}\n\nEnglish query:"
+    )
+    out = get_gemini_response(
+        rag.text_model,
+        model_input=instruction,
+        stream=False,
+        generation_config=GenerationConfig(temperature=0.2, max_output_tokens=1024),
+    )
+    return (out or "").strip()
+
+
+def _english_answer_to_japanese(
+    rag: MultimodalRAGPipeline, english_answer: str
+) -> str:
+    """Translate/summarize the English RAG answer into Japanese for the user."""
+    instruction = (
+        "Translate the following English technical answer into natural Japanese. "
+        "Preserve the full meaning; keep technical terms accurate. "
+        "Output only Japanese text, with no English preamble or labels.\n\n"
+        f"English answer:\n{english_answer}\n\nJapanese answer:"
+    )
+    out = get_gemini_response(
+        rag.text_model,
+        model_input=instruction,
+        stream=False,
+        generation_config=GenerationConfig(temperature=0.2, max_output_tokens=4096),
+    )
+    return (out or "").strip()
+
+
 # -----------------------------
 # API models (JSON RAG API)
 # -----------------------------
@@ -324,6 +363,28 @@ class MyanmarQueryRequest(BaseModel):
 
 
 class MyanmarQueryResponse(BaseModel):
+    answer: str
+    texts: List[TextChunk]
+    images: List[ImageMatch]
+    english_query: Optional[str] = None
+    english_answer: Optional[str] = None
+
+
+class GenerateQuestionRequest(BaseModel):
+    model_name: str
+    language: str
+    count: int = 1
+
+
+class JapaneseQueryRequest(BaseModel):
+    question: str
+    top_k_text: int = 5
+    top_k_img: int = 6
+    temp: float = 0.5
+    include_intermediate_english: bool = False
+
+
+class JapaneseQueryResponse(BaseModel):
     answer: str
     texts: List[TextChunk]
     images: List[ImageMatch]
@@ -393,6 +454,29 @@ class DiagnosticEnvelope(BaseModel):
 class DiagnosticAPIResponse(BaseModel):
     question: str
     diagnostic: DiagnosticEnvelope
+    images: List[ImageMatch]
+
+
+class ChatMessage(BaseModel):
+    role: str  # "user" or "model"
+    content: str
+
+
+class ChatRequest(BaseModel):
+    session_id: Optional[str] = None
+    question: str
+    history: List[ChatMessage] = []
+    top_k_text: int = 5
+    top_k_img: int = 3
+    temp: float = 0.4
+    answer_language: str = "auto"
+
+
+class ChatResponse(BaseModel):
+    session_id: str
+    answer: str
+    history: List[ChatMessage]
+    texts: List[TextChunk]
     images: List[ImageMatch]
 
 
@@ -685,6 +769,84 @@ def api_query_myanmar(payload: MyanmarQueryRequest):
 
     return MyanmarQueryResponse(
         answer=myanmar_answer,
+        texts=[TextChunk(**t) for t in texts_norm],
+        images=[ImageMatch(**img) for img in images_norm],
+        english_query=english_query if payload.include_intermediate_english else None,
+        english_answer=english_answer if payload.include_intermediate_english else None,
+    )
+
+
+@app.post("/api/query-japanese", response_model=JapaneseQueryResponse)
+def api_query_japanese(payload: JapaneseQueryRequest):
+    """
+    Accept a Japanese question, rewrite to English for vector search, run the same
+    multimodal RAG as /api/query (English answer), then translate the answer to Japanese.
+    """
+    q_raw = (payload.question or "").strip()
+    if not q_raw:
+        return JSONResponse(
+            {"detail": "question must be non-empty."},
+            status_code=400,
+        )
+
+    try:
+        rag = _get_rag()
+    except RuntimeError as e:
+        return JSONResponse(
+            {
+                "detail": f"RAG not available: {e}. "
+                "Check PROJECT_ID / LOCATION / GOOGLE_APPLICATION_CREDENTIALS and data/cache.",
+            },
+            status_code=503,
+        )
+
+    english_query = _rewrite_japanese_to_english_query(rag, q_raw)
+    if not english_query or english_query == "Exception occurred":
+        return JSONResponse(
+            {"detail": "Failed to rewrite question to English. Try again or check Vertex AI / Gemini."},
+            status_code=503,
+        )
+
+    text_matches = rag.search_text(
+        english_query,
+        top_n=payload.top_k_text,
+        chunk_text=True,
+    )
+    image_matches = rag.search_images_by_description_text(
+        english_query,
+        top_n=payload.top_k_img,
+    )
+    out = rag.answer_multimodal_query(
+        english_query,
+        top_n_text=payload.top_k_text,
+        top_n_images=payload.top_k_img,
+        temperature=payload.temp,
+        stream=False,
+        include_step_by_step=False,
+        answer_language="en",
+    )
+    english_answer = out["response"]
+    if not isinstance(english_answer, str):
+        english_answer = str(english_answer)
+
+    if not english_answer.strip() or english_answer.strip() == "Exception occurred":
+        return JSONResponse(
+            {"detail": "RAG answer generation failed. Try again or check Vertex AI / Gemini."},
+            status_code=503,
+        )
+
+    japanese_answer = _english_answer_to_japanese(rag, english_answer)
+    if not japanese_answer or japanese_answer == "Exception occurred":
+        return JSONResponse(
+            {"detail": "Failed to translate answer to Japanese. Try again or check Vertex AI / Gemini."},
+            status_code=503,
+        )
+
+    texts_norm = _normalize_text_matches(text_matches)
+    images_norm = _normalize_image_matches(image_matches)
+
+    return JapaneseQueryResponse(
+        answer=japanese_answer,
         texts=[TextChunk(**t) for t in texts_norm],
         images=[ImageMatch(**img) for img in images_norm],
         english_query=english_query if payload.include_intermediate_english else None,
@@ -1140,3 +1302,373 @@ def query(
         images=_normalize_image_matches(image_matches),
     )
     return HTMLResponse(html)
+
+
+@app.get("/chat", response_class=HTMLResponse)
+def chat_page():
+    path = TEMPLATES_DIR / "chat.html"
+    if not path.exists():
+        return HTMLResponse("<p>chat.html not found</p>", status_code=404)
+    return FileResponse(path, media_type="text/html")
+
+
+def _condense_conversational_query(rag, question: str, history: List[ChatMessage]) -> str:
+    """Rewrite follow-up question to a standalone search query containing context."""
+    if not history:
+        return question
+
+    # Format history into a simple transcript
+    history_str = ""
+    for msg in history[-4:]:  # Limit to last 4 turns for speed/efficiency
+        history_str += f"{msg.role.upper()}: {msg.content}\n"
+
+    instruction = (
+        "Given the following conversation history and a follow-up question, "
+        "rephrase the follow-up question into a short, standalone English search query "
+        "that captures the exact context, machine parts, and troubleshooting intent. "
+        "Output ONLY the standalone search query text, without explanations, markdown, or quotation marks.\n\n"
+        f"Chat History:\n{history_str}"
+        f"Follow-up Question: {question}\n\n"
+        "Standalone English Query:"
+    )
+    
+    out = get_gemini_response(
+        rag.text_model,
+        model_input=instruction,
+        stream=False,
+        generation_config=GenerationConfig(temperature=0.2, max_output_tokens=256),
+    )
+    return (out or question).strip()
+
+
+@app.post("/api/chat", response_model=ChatResponse)
+def api_chat(payload: ChatRequest):
+    """Multi-turn conversational RAG backend endpoint."""
+    try:
+        rag = _get_rag()
+    except RuntimeError as e:
+        return JSONResponse({"detail": f"RAG not ready: {e}"}, status_code=503)
+
+    session_id = payload.session_id or str(uuid.uuid4())
+    
+    # 1. Condense/Rewrite follow-up query using history
+    search_query = _condense_conversational_query(rag, payload.question, payload.history)
+    
+    # 2. Retrieve resources using condensed query
+    text_matches = rag.search_text(search_query, top_n=payload.top_k_text, chunk_text=True)
+    image_matches = rag.search_images_by_description_text(search_query, top_n=payload.top_k_img)
+    
+    # 3. Format conversational prompt context
+    context_str = ""
+    for idx, t in enumerate(text_matches.values()):
+        context_str += f"Manual Clip [{idx+1}]:\n{t.get('chunk_text', '')}\n\n"
+
+    history_str = ""
+    for msg in payload.history:
+        role_label = "Farmer" if msg.role == "user" else "Tractor Assistant"
+        history_str += f"{role_label}: {msg.content}\n"
+
+    system_prompt = (
+        "You are an empathetic, expert tractor technician and farmer's advisor.\n"
+        "Your goal is to guide the farmer safely and step-by-step through their troubleshooting scenario.\n\n"
+        "Guidelines:\n"
+        "1. Keep answers concise, extremely practical, and structured as steps or simple recommendations.\n"
+        "2. Keep a friendly, helpful tone to support the farmer or mechanic.\n"
+        "3. Only use instructions from the provided Operation Manual Clips below. If the manual clips do not contain the answer, "
+        "gently instruct the farmer to perform general safety steps and check in with their local dealer.\n\n"
+        f"Operation Manual Clips:\n{context_str}\n"
+        f"Conversation History:\n{history_str}"
+        f"Farmer's Latest Query: {payload.question}\n\n"
+        "Tractor Assistant Response:"
+    )
+
+    # 4. Generate Answer
+    out = get_gemini_response(
+        rag.text_model,
+        model_input=system_prompt,
+        stream=False,
+        generation_config=GenerationConfig(temperature=payload.temp, max_output_tokens=1024),
+    )
+    answer = (out or "").strip()
+
+    # Normalize responses
+    texts_norm = _normalize_text_matches(text_matches)
+    images_norm = _normalize_image_matches(image_matches)
+
+    # Update history list
+    new_history = list(payload.history)
+    new_history.append(ChatMessage(role="user", content=payload.question))
+    new_history.append(ChatMessage(role="model", content=answer))
+
+    return ChatResponse(
+        session_id=session_id,
+        answer=answer,
+        history=new_history,
+        texts=[TextChunk(**t) for t in texts_norm],
+        images=[ImageMatch(**img) for img in images_norm]
+    )
+
+
+@app.get("/debug-generator", response_class=HTMLResponse)
+def debug_generator_page():
+    path = TEMPLATES_DIR / "generator.html"
+    if not path.exists():
+        return HTMLResponse("<p>generator.html not found</p>", status_code=404)
+    return FileResponse(path, media_type="text/html")
+
+
+@app.get("/api/models")
+def get_available_models():
+    try:
+        rag = _get_rag()
+        if rag.text_metadata_df is not None:
+            files = list(rag.text_metadata_df["file_name"].unique())
+            models = []
+            for f in files:
+                name_without_ext = os.path.splitext(f)[0]
+                models.append({
+                    "id": f,
+                    "name": name_without_ext.upper()
+                })
+            return {"models": models}
+    except Exception as e:
+        print(f"Error fetching models from cache: {e}")
+    # Fallback to defaults if cache is not loaded yet
+    return {"models": [{"id": "ym358a.pdf", "name": "YM358A"}]}
+
+
+@app.post("/api/generate-random-question")
+def api_generate_random_question(payload: GenerateQuestionRequest):
+    import json
+    import datetime
+    import random
+    
+    try:
+        rag = _get_rag()
+    except RuntimeError as e:
+        return JSONResponse(
+            {"error": f"RAG not available: {e}"},
+            status_code=503,
+        )
+
+    df = rag.text_metadata_df
+    if df is None:
+        return JSONResponse(
+            {"error": "RAG text metadata cache is not loaded."},
+            status_code=500,
+        )
+
+    # Filter by model_name (which corresponds to file_name in dataframe, case insensitive)
+    matched_df = df[df["file_name"].str.lower() == payload.model_name.lower()]
+    if matched_df.empty:
+        matched_df = df[df["file_name"].str.lower().str.contains(payload.model_name.lower())]
+        
+    if matched_df.empty:
+        matched_df = df
+
+    if matched_df.empty:
+        return JSONResponse(
+            {"error": f"No text chunks found in cache for model {payload.model_name}."},
+            status_code=404,
+        )
+
+    # Helper to check if a chunk is clean
+    def is_clean_chunk(text: str) -> bool:
+        if not text:
+            return False
+        clean = text.strip()
+        if not clean:
+            return False
+        if clean.lower() == "no text available in this chunk.":
+            return False
+        # Remove dots and whitespace and see if we have enough characters
+        dots_removed = clean.replace(".", "").strip()
+        if len(dots_removed) < 15:
+            return False
+        return True
+
+    # Filter out bad chunks and keep order
+    matched_df = matched_df.reset_index(drop=True)
+    clean_indices = [i for i, row in matched_df.iterrows() if is_clean_chunk(row.get("chunk_text") or row.get("text"))]
+    
+    if not clean_indices:
+        return JSONResponse(
+            {"error": "No clean/descriptive text chunks found for model question generation."},
+            status_code=404,
+        )
+
+    count = max(1, min(payload.count, 50))
+    
+    if count <= len(clean_indices):
+        start_indices = random.sample(clean_indices, count)
+    else:
+        start_indices = random.choices(clean_indices, k=count)
+
+    results = []
+    for start_idx in start_indices:
+        # Pull up to 5 consecutive clean chunks from matched_df
+        chunks_to_use = []
+        for offset in range(5):
+            candidate_idx = start_idx + offset
+            if candidate_idx >= len(matched_df):
+                break
+            candidate_row = matched_df.iloc[candidate_idx]
+            
+            # Check if same document
+            if candidate_row["file_name"] != matched_df.iloc[start_idx]["file_name"]:
+                break
+                
+            candidate_text = candidate_row.get("chunk_text") or candidate_row.get("text") or ""
+            if is_clean_chunk(candidate_text):
+                chunks_to_use.append(candidate_row)
+            else:
+                break
+
+        if not chunks_to_use:
+            chunks_to_use = [matched_df.iloc[start_idx]]
+
+        # Merge adjacent chunks' text and page/chunk ranges
+        merged_texts = []
+        page_nums = []
+        chunk_numbers = []
+        file_name = chunks_to_use[0]["file_name"]
+        
+        for c in chunks_to_use:
+            c_text = c.get("chunk_text") or c.get("text") or ""
+            merged_texts.append(c_text.strip())
+            p = int(c.get("page_num", 0))
+            chnk = int(c.get("chunk_number", 0))
+            if p not in page_nums:
+                page_nums.append(p)
+            if chnk not in chunk_numbers:
+                chunk_numbers.append(chnk)
+
+        merged_chunk_text = "\n\n---\n\n".join(merged_texts)
+        page_range_str = ", ".join(map(str, sorted(page_nums)))
+        chunk_range_str = ", ".join(map(str, sorted(chunk_numbers)))
+
+        # Build robust prompt for question generation
+        if payload.language == "my":
+            instruction = (
+                "You are an expert tractor mechanic and farmer advisor.\n"
+                "Based on the following instruction/manual text chunk(s) from a tractor operation manual, "
+                "generate ONE high-quality, natural, and extremely realistic question that either a farmer (end user of the tractor) "
+                "or a mechanic would ask in a real-world troubleshooting or maintenance scenario, written in Myanmar (Burmese) language.\n\n"
+                "Guidelines for the question:\n"
+                "1. The question must be a SINGLE, CONCISE, and SIMPLE sentence focusing on exactly ONE specific practical action or troubleshooting symptom mentioned in the text chunk.\n"
+                "2. CRITICAL: Do NOT ask compound questions, do NOT include multiple sub-questions, and do NOT try to cover the entire text chunk. Just select one single, direct topic (e.g., a specific procedure, a single symptom, or a single maintenance task) from the manual text and ask a simple, single-clause query about it.\n"
+                "3. Use these exact styles of simple, single-clause queries as reference (translated into natural, colloquial Myanmar/Burmese script):\n"
+                "   - 'How to replace the clutch' (ကလပ်ပြား ဘယ်လိုလဲမလဲ)\n"
+                "   - 'How to change the engine oil' (အင်ဂျင်ဝိုင် ဘယ်လိုလဲရမလဲ)\n"
+                "   - 'What should we do if we cannot wake up our y35a tractor?' (ထရက်တာ စက်နှိုးမရရင် ဘာလုပ်ရမလဲ)\n"
+                "   - 'What should we do if the front axle is leaking oil?' (ရှေ့ဝင်ရိုး ဆီယိုနေရင် ဘာလုပ်ရမလဲ)\n"
+                "   - 'What should we do if the engine is emitting smoke?' (အင်ဂျင်ကနေ မီးခိုးတွေ ထွက်နေရင် ဘာလုပ်ရမလဲ)\n"
+                "   - 'What should we do with tappet clearance?' (တပက် ကစားသံ/တပက်ကလီးယားရင့်စ် ပြဿနာဖြစ်ရင် ဘာလုပ်ရမလဲ)\n"
+                "4. Absolutely avoid hyper-specific questions asking for precise figures from a table (e.g., do NOT ask 'What is the maximum allowed pressure for 8-18 6PR front tires?' or 'What is the clearance value in mm?'). "
+                "Instead, ask a practical, high-level troubleshooting or maintenance question that would lead a user or mechanic to refer to this manual section.\n"
+                "5. Output ONLY the single Myanmar (Burmese) question. Do NOT include any English translation, introductory phrase, explanations, conversational filler, or quotation marks.\n\n"
+                f"Manual Chunk(s):\n\"\"\"\n{merged_chunk_text}\n\"\"\"\n\n"
+                "Farmer/Mechanic Question (in Myanmar/Burmese script):"
+            )
+        elif payload.language in ("ja", "jp"):
+            instruction = (
+                "You are an expert tractor mechanic and farmer advisor.\n"
+                "Based on the following instruction/manual text chunk(s) from a tractor operation manual, "
+                "generate ONE high-quality, natural, and extremely realistic question that either a farmer (end user of the tractor) "
+                "or a mechanic would ask in a real-world troubleshooting or maintenance scenario, written in Japanese.\n\n"
+                "Guidelines for the question:\n"
+                "1. The question must be a SINGLE, CONCISE, and SIMPLE sentence focusing on exactly ONE specific practical action or troubleshooting symptom mentioned in the text chunk.\n"
+                "2. CRITICAL: Do NOT ask compound questions, do NOT include multiple sub-questions, and do NOT try to cover the entire text chunk. Just select one single, direct topic (e.g., a specific procedure, a single symptom, or a single maintenance task) from the manual text and ask a simple, single-clause query about it.\n"
+                "3. Use these exact styles of simple, single-clause queries as reference (translated into natural, colloquial Japanese):\n"
+                "   - 'How to replace the clutch' (クラッチの交換方法は？)\n"
+                "   - 'How to OPERATE THE ENGINE' (エンジンの操作方法は？)\n"
+                "   - 'How to change the engine oil' (エンジンオイルの交換方法は？)\n"
+                "   - 'What should we do if we cannot wake up our y35a tractor?' (トラクターのエンジンがかからない場合はどうすればよいですか？)\n"
+                "   - 'What should we do front axle is leaking oil' (フロントアクスルからオイル漏れしている場合はどうすればよいですか？)\n"
+                "   - 'What should we do if the engine is emitting smoke?' (エンジンから煙が出ている場合はどうすればよいですか？)\n"
+                "   - 'What should we do with tappet clearance?' (タペットの隙間調整はどうすればよいですか？)\n"
+                "4. Absolutely avoid hyper-specific questions asking for precise figures from a table (e.g., do NOT ask 'What is the maximum allowed pressure for 8-18 6PR front tires?' or 'What is the clearance value in mm?'). "
+                "Instead, ask a practical, high-level troubleshooting or maintenance question that would lead a user or mechanic to refer to this manual section.\n"
+                "5. Output ONLY the single Japanese question. Do NOT include any English translation, introductory phrase, explanations, conversational filler, or quotation marks.\n\n"
+                f"Manual Chunk(s):\n\"\"\"\n{merged_chunk_text}\n\"\"\"\n\n"
+                "Farmer/Mechanic Question (in Japanese script):"
+            )
+        else:
+            instruction = (
+                "You are an expert tractor mechanic and farmer advisor.\n"
+                "Based on the following instruction/manual text chunk(s) from a tractor operation manual, "
+                "generate ONE high-quality, natural, and extremely realistic question that either a farmer (end user of the tractor) "
+                "or a mechanic would ask in a real-world troubleshooting or maintenance scenario, written in English.\n\n"
+                "Guidelines for the question:\n"
+                "1. The question must be a SINGLE, CONCISE, and SIMPLE sentence focusing on exactly ONE specific practical action or troubleshooting symptom mentioned in the text chunk.\n"
+                "2. CRITICAL: Do NOT ask compound questions, do NOT include multiple sub-questions, and do NOT try to cover the entire text chunk. Just select one single, direct topic (e.g., a specific procedure, a single symptom, or a single maintenance task) from the manual text and ask a simple, single-clause query about it.\n"
+                "3. Use these exact styles of simple, single-clause queries as reference:\n"
+                "   - 'How to replace the clutch'\n"
+                "   - 'How to OPERATE THE ENGINE'\n"
+                "   - 'How to change the engine oil'\n"
+                "   - 'What should we do if we cannot wake up our y35a tractor?'\n"
+                "   - 'What should we do front axle is leaking oil'\n"
+                "   - 'What should we do if the engine is emitting smoke?'\n"
+                "   - 'What should we do with tappet clearance?'\n"
+                "4. CRITICAL: Absolutely avoid hyper-specific questions asking for precise figures from a table (e.g., do NOT ask 'What is the maximum allowed pressure for 8-18 6PR front tires?' or 'What is the clearance value in mm?'). "
+                "Instead, ask a practical, high-level troubleshooting or maintenance question that would lead a user or mechanic to refer to this manual section.\n"
+                "5. Output ONLY the single English question. Do NOT include any introductory phrase, explanations, conversational filler, or quotation marks.\n\n"
+                f"Manual Chunk(s):\n\"\"\"\n{merged_chunk_text}\n\"\"\"\n\n"
+                "Farmer/Mechanic Question (in English):"
+            )
+
+        try:
+            generated_question = get_gemini_response(
+                rag.text_model,
+                model_input=instruction,
+                stream=False,
+                generation_config=GenerationConfig(temperature=0.7, max_output_tokens=512),
+            )
+            generated_question = (generated_question or "").strip().strip('"').strip("'")
+        except Exception as e:
+            return JSONResponse(
+                {"error": f"Failed to generate question with Gemini: {str(e)}"},
+                status_code=500,
+            )
+
+        question_item = {
+            "id": str(uuid.uuid4()),
+            "file_name": file_name,
+            "page_num": page_nums[0],
+            "page_range": page_range_str,
+            "chunk_number": chunk_numbers[0],
+            "chunk_range": chunk_range_str,
+            "chunk_text": merged_chunk_text,
+            "generated_question": generated_question,
+            "language": payload.language,
+            "timestamp": datetime.datetime.now().isoformat()
+        }
+        results.append(question_item)
+
+    # Persistent JSON storage
+    questions_json_path = Path(CACHE_DIR) / "generated_questions.json"
+    existing_questions = []
+    if questions_json_path.exists():
+        try:
+            with open(questions_json_path, "r", encoding="utf-8") as f:
+                existing_questions = json.load(f)
+                if not isinstance(existing_questions, list):
+                    existing_questions = []
+        except Exception as e:
+            print(f"Error reading existing questions JSON: {e}")
+            
+    existing_questions.extend(results)
+    
+    try:
+        Path(CACHE_DIR).mkdir(parents=True, exist_ok=True)
+        with open(questions_json_path, "w", encoding="utf-8") as f:
+            json.dump(existing_questions, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"Error writing to questions JSON: {e}")
+
+    return {
+        "success": True,
+        "questions": results,
+    }
+
+
