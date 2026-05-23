@@ -18,6 +18,7 @@ dependencies = [
     "langchain-core>=0.3.83",
     "langchain-google-vertexai>=2.0.9",
     "nltk>=3.9.2",
+    "numpy>=2.4.2",
     "opencv-python-headless>=4.13.0.92",
     "pandas>=3.0.1",
     "pillow>=12.1.1",

@@ -17,9 +17,13 @@ import os
 import sys
 from pathlib import Path
 
-from dotenv import load_dotenv
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
-load_dotenv()
+from dotenv import load_dotenv  # noqa: E402
+
+load_dotenv(_REPO_ROOT / ".env")
 
 from vertexai.generative_models import GenerationConfig  # noqa: E402
 
@@ -33,7 +37,7 @@ def _resolve_credentials() -> None:
         return
     p = Path(creds)
     if not p.is_absolute():
-        p = Path(__file__).resolve().parent.parent / creds
+        p = _REPO_ROOT / creds
     os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = str(p.resolve())
 
 
