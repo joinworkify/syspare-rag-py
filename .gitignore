@@ -40,3 +40,6 @@ testing/out_images
 test
 out_images
 # cache
+
+# Internal AI lead docs (untracked)
+docs/internal/

@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import io
 import json
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -25,10 +24,6 @@ import pandas as pd
 import pymupdf as fitz  # pymupdf
 import vertexai
 from vertexai.generative_models import GenerationConfig, GenerativeModel
-
-# Embeddings (Vertex)
-# If this import fails, upgrade google-cloud-aiplatform.
-from vertexai.vision_models import MultiModalEmbeddingModel
 
 # Your utilities (downloaded from gs://github-repo/rag/intro_multimodal_rag/...)
 from utils import (
@@ -42,6 +37,14 @@ from utils import (
 )
 import re
 
+from syspare_rag.config import RagConfig
+from syspare_rag.indexing.embedder import VertexTextEmbedder
+from syspare_rag.indexing.validation import (
+    inferred_image_pixel_dim,
+    validate_image_index,
+    validate_text_index,
+)
+
 try:
     from PIL import Image as PILImage
 except Exception:
@@ -53,40 +56,7 @@ except Exception:
     pytesseract = None
 
 
-# -----------------------------
-# Config
-# -----------------------------
-@dataclass
-class RagConfig:
-    project_id: str
-    location: str = "us-central1"
-
-    # Gemini model name
-    model_name: str = "gemini-2.0-flash"
-
-    # Embeddings
-    embedding_size: int = 1408
-    embedding_model_name: str = "multimodalembedding@001"  # common 1408-d model
-
-    # Extraction settings
-    image_save_dir: str = "images"
-    image_description_prompt: str = (
-        "Explain what is going on in the image.\n"
-        "If it's a table, extract all elements of the table.\n"
-        "If it's a graph, explain the findings in the graph.\n"
-        "Do not include any numbers that are not mentioned in the image.\n"
-    )
-
-    # OCR settings (fallback)
-    enable_ocr_fallback: bool = True
-    ocr_min_chars: int = 40  # if extracted text < this, OCR that page
-    ocr_dpi: int = 200
-    # Tesseract language(s). Use '+' to combine, e.g. "mya+eng".
-    ocr_lang: str = "eng"
-
-    # OCR chunking (simple char-based)
-    ocr_chunk_chars: int = 1200
-    ocr_chunk_overlap: int = 150
+# RagConfig lives in syspare_rag.config (re-exported here for backward compatibility).
 
 
 # -----------------------------
@@ -109,7 +79,7 @@ class MultimodalRAGPipeline:
         self.multimodal_model: GenerativeModel = None  # type: ignore
         self.multimodal_model_flash: GenerativeModel = None  # type: ignore
 
-        self.embedder: MultiModalEmbeddingModel = None  # type: ignore
+        self._text_embedder: VertexTextEmbedder
 
         self.text_metadata_df: Optional[pd.DataFrame] = None
         self.image_metadata_df: Optional[pd.DataFrame] = None
@@ -126,9 +96,8 @@ class MultimodalRAGPipeline:
         self.multimodal_model = self.text_model
         self.multimodal_model_flash = self.text_model
 
-        # Embedder used for OCR text chunks
-        self.embedder = MultiModalEmbeddingModel.from_pretrained(
-            self.config.embedding_model_name
+        self._text_embedder = VertexTextEmbedder(
+            model_name=self.config.text_embedding_model
         )
 
     @property
@@ -180,7 +149,13 @@ class MultimodalRAGPipeline:
             "image_csv": str(image_csv),
         }
 
-    def load_cache(self, cache_dir: str, *, rebuild_image_objects: bool = True) -> bool:
+    def load_cache(
+        self,
+        cache_dir: str,
+        *,
+        rebuild_image_objects: bool = True,
+        validate: bool = True,
+    ) -> bool:
         cache_path = Path(cache_dir)
         text_pkl = cache_path / "text_metadata_df.pkl"
         image_pkl = cache_path / "image_metadata_df.pkl"
@@ -191,10 +166,37 @@ class MultimodalRAGPipeline:
         self.text_metadata_df = pd.read_pickle(text_pkl)
         self.image_metadata_df = pd.read_pickle(image_pkl)
 
+        if validate:
+            self._validate_loaded_cache()
+
         if rebuild_image_objects:
             self._rebuild_image_objects_from_paths()
 
         return True
+
+    def _validate_loaded_cache(self) -> None:
+        """Guard against P0-1 (mixed embedding dimensions) on cache load."""
+        if self.text_metadata_df is not None:
+            validate_text_index(
+                self.text_metadata_df,
+                text_embedding_dim=self.config.text_embedding_dimension,
+            )
+        if self.image_metadata_df is not None:
+            cached_pixel_dim = inferred_image_pixel_dim(self.image_metadata_df)
+            validate_image_index(
+                self.image_metadata_df,
+                text_embedding_dim=self.config.text_embedding_dimension,
+                image_embedding_dim=cached_pixel_dim,
+            )
+            if (
+                cached_pixel_dim is not None
+                and cached_pixel_dim != self.config.embedding_size
+            ):
+                print(
+                    f"[pipeline] image pixel embedding dim in cache is "
+                    f"{cached_pixel_dim} but RagConfig.embedding_size="
+                    f"{self.config.embedding_size}; using cached dim for queries."
+                )
 
     def _rebuild_image_objects_from_paths(self) -> None:
         if PILImage is None or self.image_metadata_df is None:
@@ -263,14 +265,7 @@ class MultimodalRAGPipeline:
         ).strip()
 
     def _embed_text(self, text: str) -> List[float]:
-        emb = self.embedder.get_embeddings(contextual_text=text)
-        vec = getattr(emb, "text_embedding", None)
-        if vec is None:
-            raise RuntimeError("Embedding output missing text_embedding.")
-        if hasattr(vec, "values"):
-            vec = vec.values
-        arr = np.array(vec, dtype=np.float32)
-        return arr.tolist()
+        return self._text_embedder.embed_text(text)
 
     def _pdf_paths(self, pdf_folder_path: str) -> List[Path]:
         p = Path(pdf_folder_path)
@@ -454,6 +449,8 @@ class MultimodalRAGPipeline:
 
         self.text_metadata_df = text_df
         self.image_metadata_df = image_df
+
+        self._validate_loaded_cache()
 
         if cache_dir:
             self.save_cache(cache_dir)

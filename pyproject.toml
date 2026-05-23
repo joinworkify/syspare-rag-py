@@ -19,6 +19,7 @@ dependencies = [
     "langchain-google-vertexai>=2.0.9",
     "nltk>=3.9.2",
     "numpy>=2.4.2",
+    "opencv-python-headless>=4.13.0.92",
     "pandas>=3.0.1",
     "pillow>=12.1.1",
     "pymupdf>=1.27.1",
@@ -26,6 +27,7 @@ dependencies = [
     "pypdf2>=3.0.1",
     "pytesseract>=0.3.13",
     "pytest>=9.0.2",
+    "python-dotenv>=1.2.1",
     "python-multipart>=0.0.22",
     "rich>=14.3.3",
     "tqdm>=4.67.3",
@@ -33,3 +35,7 @@ dependencies = [
     "uvicorn>=0.41.0",
     "vertexai>=1.71.1",
 ]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]

@@ -20,14 +20,9 @@ from vertexai.generative_models import (
     HarmCategory,
     Image,
 )
-from vertexai.language_models import TextEmbeddingModel
-from vertexai.vision_models import Image as vision_model_Image
-from vertexai.vision_models import MultiModalEmbeddingModel
 
-text_embedding_model = TextEmbeddingModel.from_pretrained("text-embedding-004")
-multimodal_embedding_model = MultiModalEmbeddingModel.from_pretrained(
-    "multimodalembedding"
-)
+from syspare_rag.indexing.embedder import embed_image, embed_text
+from syspare_rag.retrieval.similarity import row_cosine_similarity
 
 
 # Functions for getting text and image embeddings
@@ -50,13 +45,12 @@ def get_text_embedding_from_text_embedding_model(
                                The format (list or NumPy array) depends on the
                                value of the 'return_array' parameter.
     """
-    embeddings = text_embedding_model.get_embeddings([text])
-    text_embedding = [embedding.values for embedding in embeddings][0]
+    embeddings = embed_text(text)
+    text_embedding = embeddings
 
     if return_array:
         text_embedding = np.fromiter(text_embedding, dtype=float)
 
-    # returns 768 dimensional array
     return text_embedding
 
 
@@ -79,12 +73,11 @@ def get_image_embedding_from_multimodal_embedding_model(
     Returns:
         list: A list containing the image embedding values. If `return_array` is True, returns a NumPy array instead.
     """
-    # image = Image.load_from_file(image_uri)
-    image = vision_model_Image.load_from_file(image_uri)
-    embeddings = multimodal_embedding_model.get_embeddings(
-        image=image, contextual_text=text, dimension=embedding_size
-    )  # 128, 256, 512, 1408
-    image_embedding = embeddings.image_embedding
+    image_embedding = embed_image(
+        image_uri,
+        embedding_size=embedding_size,
+        contextual_text=text,
+    )
 
     if return_array:
         image_embedding = np.fromiter(image_embedding, dtype=float)
@@ -737,22 +730,12 @@ def get_user_query_image_embeddings(
 
 
 def get_cosine_score(
-    dataframe: pd.DataFrame, column_name: str, input_text_embed: np.ndarray
+    row: pd.Series, column_name: str, input_text_embed: np.ndarray
 ) -> float:
     """
-    Calculates the cosine similarity between the user query embedding and the dataframe embedding for a specific column.
-
-    Args:
-        dataframe: The pandas DataFrame containing the data to compare against.
-        column_name: The name of the column containing the embeddings to compare with.
-        input_text_embed: The NumPy array representing the user query embedding.
-
-    Returns:
-        The cosine similarity score (rounded to two decimal places) between the user query embedding and the dataframe embedding.
+    Cosine similarity between a row embedding and the query embedding.
     """
-
-    text_cosine_score = round(np.dot(dataframe[column_name], input_text_embed), 2)
-    return text_cosine_score
+    return row_cosine_similarity(row, column_name, input_text_embed)
 
 
 def print_text_to_image_citation(
