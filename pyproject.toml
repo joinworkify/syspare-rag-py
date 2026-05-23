@@ -32,3 +32,7 @@ dependencies = [
     "uvicorn>=0.41.0",
     "vertexai>=1.71.1",
 ]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
