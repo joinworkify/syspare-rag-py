@@ -16,26 +16,31 @@ from pydantic import BaseModel
 from vertexai.generative_models import GenerationConfig
 
 from pipeline import RagConfig, MultimodalRAGPipeline
+from syspare_rag.config import (
+    ManualConfig,
+    ManualRegistry,
+    load_manual_registry_from_env,
+)
 from utils import get_gemini_response
 
 load_dotenv()
 
 try:
     from s3_storage import (
-        download_cache_from_s3,
-        download_pdfs_from_s3,
+        download_manual_cache_from_s3,
+        download_manual_pdfs_from_s3,
         is_s3_configured,
-        upload_cache_to_s3,
-        upload_pdf_file_to_s3,
-        upload_pdfs_to_s3,
+        upload_manual_cache_to_s3,
+        upload_manual_pdf_file_to_s3,
+        upload_manual_pdfs_to_s3,
     )
 except ImportError:
     is_s3_configured = lambda: False
-    download_pdfs_from_s3 = lambda _: 0
-    download_cache_from_s3 = lambda _: 0
-    upload_cache_to_s3 = lambda _: 0
-    upload_pdfs_to_s3 = lambda _: 0
-    upload_pdf_file_to_s3 = lambda *a, **k: False
+    download_manual_cache_from_s3 = lambda *a, **k: 0
+    download_manual_pdfs_from_s3 = lambda *a, **k: 0
+    upload_manual_cache_to_s3 = lambda *a, **k: 0
+    upload_manual_pdfs_to_s3 = lambda *a, **k: 0
+    upload_manual_pdf_file_to_s3 = lambda *a, **k: False
 
 
 # -----------------------------
@@ -45,17 +50,23 @@ def _env(key: str, default: str) -> str:
     return os.environ.get(key, default).strip()
 
 
-PDF_FOLDER = _env("PDF_FOLDER", "./data/")
-CACHE_DIR = _env("CACHE_DIR", "./cache")
-IMAGE_DIR = _env("IMAGE_DIR", "./cache/images")  # must match RagConfig.image_save_dir
-OCR_LANG = _env("OCR_LANG", "mya+eng")
-
 PROJECT_ID = _env("PROJECT_ID", "fortunaii")
 LOCATION = _env("LOCATION", "us-central1")
 
 # Allow disabling S3 sync for local/dev (set DISABLE_S3_SYNC=1).
 DISABLE_S3_SYNC = _env("DISABLE_S3_SYNC", "0")
 INIT_RAG_ON_STARTUP = _env("INIT_RAG_ON_STARTUP", "0")
+
+# Manual registry: list of available manuals + default selection.
+manual_registry: ManualRegistry = load_manual_registry_from_env()
+DEFAULT_MANUAL = manual_registry.default
+DEFAULT_MANUAL_ID = manual_registry.default_id
+
+# Backward-compat env defaults: keep legacy globals pointing at the default manual.
+PDF_FOLDER = _env("PDF_FOLDER", DEFAULT_MANUAL.pdf_folder)
+CACHE_DIR = _env("CACHE_DIR", DEFAULT_MANUAL.cache_dir)
+IMAGE_DIR = _env("IMAGE_DIR", DEFAULT_MANUAL.image_dir)
+OCR_LANG = _env("OCR_LANG", DEFAULT_MANUAL.ocr_lang or "mya+eng")
 
 
 # -----------------------------
@@ -78,102 +89,170 @@ app.add_middleware(
 TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
 jinja_env = Environment(loader=FileSystemLoader(str(TEMPLATES_DIR)), autoescape=True)
 
-# Serve images folder in browser as /static/...
-Path(IMAGE_DIR).mkdir(parents=True, exist_ok=True)
-app.mount("/static", StaticFiles(directory=IMAGE_DIR), name="static")
+# Serve each manual's image dir under /static/<manual_id>/...; also keep /static
+# pointing at the default manual for backward compatibility.
+# Per-manual mounts must be registered BEFORE the broader /static catch-all,
+# otherwise Starlette routes /static/<manual_id>/... to the wrong handler.
+for _manual in manual_registry.list():
+    Path(_manual.image_dir).mkdir(parents=True, exist_ok=True)
+    app.mount(
+        f"/static/{_manual.manual_id}",
+        StaticFiles(directory=_manual.image_dir),
+        name=f"static-{_manual.manual_id}",
+    )
+Path(DEFAULT_MANUAL.image_dir).mkdir(parents=True, exist_ok=True)
+app.mount("/static", StaticFiles(directory=DEFAULT_MANUAL.image_dir), name="static")
 
 
 # -----------------------------
-# Initialize pipeline once (lazy on first use if init fails)
+# Per-manual pipeline cache (lazy)
 # -----------------------------
-_rag: Optional[MultimodalRAGPipeline] = None
-_rag_error: Optional[str] = None
+_pipelines: Dict[str, MultimodalRAGPipeline] = {}
+_pipeline_errors: Dict[str, str] = {}
 
 
-def _sync_from_s3() -> None:
-    """Pull PDFs and cache from S3 into local dirs (if S3 configured)."""
+def _resolve_manual(manual_id: Optional[str]) -> ManualConfig:
+    """Return ManualConfig for an optional manual_id; default if blank."""
+    try:
+        return manual_registry.get(manual_id)
+    except KeyError as exc:
+        raise RuntimeError(str(exc))
+
+
+def _sync_from_s3(manual: ManualConfig) -> None:
+    """Pull a single manual's PDFs and cache from S3 into its local dirs."""
     if DISABLE_S3_SYNC == "1":
         return
     if not is_s3_configured():
         return
-    Path(PDF_FOLDER).mkdir(parents=True, exist_ok=True)
-    Path(CACHE_DIR).mkdir(parents=True, exist_ok=True)
-    n_pdfs = download_pdfs_from_s3(PDF_FOLDER)
-    n_cache = download_cache_from_s3(CACHE_DIR)
+    Path(manual.pdf_folder).mkdir(parents=True, exist_ok=True)
+    Path(manual.cache_dir).mkdir(parents=True, exist_ok=True)
+    n_pdfs = download_manual_pdfs_from_s3(manual.manual_id, manual.pdf_folder)
+    n_cache = download_manual_cache_from_s3(manual.manual_id, manual.cache_dir)
     if n_pdfs or n_cache:
-        print(f"S3 sync: downloaded {n_pdfs} PDF(s), {n_cache} cache file(s).")
+        print(
+            f"[{manual.manual_id}] S3 sync: downloaded {n_pdfs} PDF(s), "
+            f"{n_cache} cache file(s)."
+        )
 
 
-def _sync_to_s3() -> Dict[str, int]:
-    """Push cache (and PDFs) to S3 (if S3 configured). Returns counts."""
+def _sync_to_s3(manual: ManualConfig) -> Dict[str, int]:
+    """Push a single manual's cache (and PDFs) to S3."""
     if DISABLE_S3_SYNC == "1":
         return {"cache": 0, "pdfs": 0}
     if not is_s3_configured():
         return {"cache": 0, "pdfs": 0}
-    n_cache = upload_cache_to_s3(CACHE_DIR)
-    n_pdfs = upload_pdfs_to_s3(PDF_FOLDER)
+    n_cache = upload_manual_cache_to_s3(manual.manual_id, manual.cache_dir)
+    n_pdfs = upload_manual_pdfs_to_s3(manual.manual_id, manual.pdf_folder)
     if n_cache or n_pdfs:
-        print(f"S3 sync: uploaded {n_cache} cache file(s), {n_pdfs} PDF(s).")
+        print(
+            f"[{manual.manual_id}] S3 sync: uploaded {n_cache} cache file(s), "
+            f"{n_pdfs} PDF(s)."
+        )
     return {"cache": n_cache, "pdfs": n_pdfs}
 
 
-def _clear_rag_state() -> None:
-    """Reset in-memory RAG so next request will load or rebuild."""
-    global _rag, _rag_error
-    _rag = None
-    _rag_error = None
+def _clear_rag_state(manual_id: Optional[str] = None) -> None:
+    """Clear in-memory pipeline state for one manual (or all when None)."""
+    if manual_id is None:
+        _pipelines.clear()
+        _pipeline_errors.clear()
+        return
+    _pipelines.pop(manual_id, None)
+    _pipeline_errors.pop(manual_id, None)
 
 
-def _get_rag() -> MultimodalRAGPipeline:
-    global _rag, _rag_error
-    if _rag is not None:
-        return _rag
-    if _rag_error:
-        raise RuntimeError(_rag_error)
+def _remap_image_paths(rag: MultimodalRAGPipeline, manual: ManualConfig) -> None:
+    """Rewrite cached image_metadata_df.img_path to current image_dir.
+
+    Caches built in earlier layouts (e.g. ./cache/images/...) store stale paths.
+    We rebase them to manual.image_dir/<basename or relative subpath> so image
+    retrieval and URL building work after the per-manual restructure.
+    """
+    df = rag.image_metadata_df
+    if df is None or "img_path" not in df.columns:
+        return
+    img_root = Path(manual.image_dir).resolve()
+
+    def _rebase(value):
+        if not value:
+            return value
+        original = Path(str(value))
+        # If already pointing at a real file under image_dir, keep it.
+        candidate = (img_root / original.name) if not original.is_absolute() else original
+        try:
+            if candidate.exists():
+                return str(candidate)
+        except Exception:
+            pass
+        fallback = img_root / Path(str(value)).name
+        return str(fallback) if fallback.exists() else str(candidate)
+
+    df["img_path"] = df["img_path"].map(_rebase)
+
+
+def _build_rag_config(manual: ManualConfig) -> RagConfig:
+    return RagConfig(
+        project_id=PROJECT_ID,
+        location=LOCATION,
+        model_name="gemini-2.0-flash",
+        embedding_size=1408,
+        embedding_model_name="multimodalembedding@001",
+        image_save_dir=manual.image_dir,
+        enable_ocr_fallback=True,
+        ocr_min_chars=40,
+        ocr_dpi=200,
+        ocr_lang=manual.ocr_lang or OCR_LANG,
+    )
+
+
+def _get_rag(manual_id: Optional[str] = None) -> MultimodalRAGPipeline:
+    """Return a cached pipeline for the requested manual, loading or building lazily."""
+    manual = _resolve_manual(manual_id)
+    mid = manual.manual_id
+
+    cached = _pipelines.get(mid)
+    if cached is not None:
+        return cached
+
+    err = _pipeline_errors.get(mid)
+    if err:
+        raise RuntimeError(err)
+
     try:
-        _sync_from_s3()
-        cfg = RagConfig(
-            project_id=PROJECT_ID,
-            location=LOCATION,
-            model_name="gemini-2.0-flash",
-            embedding_size=1408,
-            embedding_model_name="multimodalembedding@001",
-            image_save_dir=IMAGE_DIR,
-            enable_ocr_fallback=True,
-            ocr_min_chars=40,
-            ocr_dpi=200,
-            ocr_lang=OCR_LANG,
-        )
+        _sync_from_s3(manual)
+        cfg = _build_rag_config(manual)
         rag_instance = MultimodalRAGPipeline(cfg)
         # Try to load cache first; if missing, build from PDFs.
-        if not rag_instance.load_cache(CACHE_DIR, rebuild_image_objects=False):
-            print("Metadata cache not found. Building metadata...")
+        if not rag_instance.load_cache(manual.cache_dir, rebuild_image_objects=False):
+            print(f"[{mid}] Metadata cache not found. Building metadata...")
             rag_instance.build_metadata(
-                pdf_folder_path=PDF_FOLDER,
-                cache_dir=CACHE_DIR,
+                pdf_folder_path=manual.pdf_folder,
+                cache_dir=manual.cache_dir,
                 force_rebuild=False,
                 generation_config=GenerationConfig(temperature=0.2),
                 ocr_fallback=True,
-                image_save_dir=IMAGE_DIR,
+                image_save_dir=manual.image_dir,
             )
-            _sync_to_s3()
+            _sync_to_s3(manual)
         else:
-            print("Metadata cache loaded from disk.")
-        _rag = rag_instance
-        return _rag
+            print(f"[{mid}] Metadata cache loaded from disk.")
+        _remap_image_paths(rag_instance, manual)
+        _pipelines[mid] = rag_instance
+        return rag_instance
     except Exception as e:
-        _rag_error = str(e)
-        raise RuntimeError(_rag_error)
+        _pipeline_errors[mid] = str(e)
+        raise RuntimeError(str(e))
 
 
 @app.on_event("startup")
 def _ensure_rag():
-    """Optionally init pipeline at startup (fails gracefully)."""
+    """Optionally init the default pipeline at startup (fails gracefully)."""
     if INIT_RAG_ON_STARTUP != "1":
         # Keep startup fast; RAG will be initialized lazily on first query/build-cache.
         return
     try:
-        _get_rag()
+        _get_rag(DEFAULT_MANUAL_ID)
     except Exception as e:
         print(f"RAG not ready at startup: {e}")
 
@@ -181,26 +260,29 @@ def _ensure_rag():
 # -----------------------------
 # Helpers
 # -----------------------------
-def _safe_image_url(img_path: str) -> str:
+def _safe_image_url(img_path: str, manual_id: Optional[str] = None) -> str:
     """
-    Convert absolute/relative img_path to URL under /static/.
-    This assumes img_path is inside IMAGE_DIR (possibly in subdirectories).
-    """
-    p = Path(img_path)
-    root = Path(IMAGE_DIR).resolve()
+    Convert an absolute/relative img_path to a URL under /static/<manual_id>/...
 
+    Handles caches built in older layouts by falling back to basename lookup
+    inside the manual's image dir.
+    """
+    manual = _resolve_manual(manual_id)
+    p = Path(img_path)
+    root = Path(manual.image_dir).resolve()
+
+    rel: Path
     try:
-        # Prefer path relative to IMAGE_DIR so subdirectories are preserved
         rel = p.resolve().relative_to(root)
     except Exception:
-        # Fallback: just use the basename
-        rel = p.name
+        rel = Path(p.name)
 
-    return f"/static/{rel.as_posix()}"
+    return f"/static/{manual.manual_id}/{rel.as_posix()}"
 
 
 def _normalize_image_matches(
     image_matches: Dict[Any, Dict[str, Any]],
+    manual_id: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """
     Your utils often return a dict-like structure whose values look like:
@@ -215,7 +297,7 @@ def _normalize_image_matches(
         out.append(
             {
                 "img_path": img_path,
-                "img_url": _safe_image_url(str(img_path)),
+                "img_url": _safe_image_url(str(img_path), manual_id),
                 "caption": v.get("image_description", ""),
                 "score": v.get("score"),
                 "page": v.get("page") or v.get("page_number"),
@@ -344,12 +426,14 @@ class QueryRequest(BaseModel):
     temp: float = 0.5
     # "auto" | "en" | "my"
     answer_language: str = "auto"
+    manual_id: Optional[str] = None
 
 
 class QueryResponse(BaseModel):
     answer: str
     texts: List[TextChunk]
     images: List[ImageMatch]
+    manual_id: Optional[str] = None
 
 
 class MyanmarQueryRequest(BaseModel):
@@ -360,6 +444,7 @@ class MyanmarQueryRequest(BaseModel):
     top_k_img: int = 6
     temp: float = 0.5
     include_intermediate_english: bool = False
+    manual_id: Optional[str] = None
 
 
 class MyanmarQueryResponse(BaseModel):
@@ -368,12 +453,14 @@ class MyanmarQueryResponse(BaseModel):
     images: List[ImageMatch]
     english_query: Optional[str] = None
     english_answer: Optional[str] = None
+    manual_id: Optional[str] = None
 
 
 class GenerateQuestionRequest(BaseModel):
     model_name: str
     language: str
     count: int = 1
+    manual_id: Optional[str] = None
 
 
 class JapaneseQueryRequest(BaseModel):
@@ -382,6 +469,7 @@ class JapaneseQueryRequest(BaseModel):
     top_k_img: int = 6
     temp: float = 0.5
     include_intermediate_english: bool = False
+    manual_id: Optional[str] = None
 
 
 class JapaneseQueryResponse(BaseModel):
@@ -390,6 +478,7 @@ class JapaneseQueryResponse(BaseModel):
     images: List[ImageMatch]
     english_query: Optional[str] = None
     english_answer: Optional[str] = None
+    manual_id: Optional[str] = None
 
 
 class QueryWithOptionalImageRequest(BaseModel):
@@ -409,6 +498,7 @@ class QueryWithOptionalImageRequest(BaseModel):
     embedding_size: int = 128
     # "auto" | "en" | "my"
     answer_language: str = "auto"
+    manual_id: Optional[str] = None
 
 
 class DiagnosticAction(BaseModel):
@@ -441,6 +531,7 @@ class DiagnosticPayload(BaseModel):
     temp: float = 0.4
     # "auto" | "en" | "my"
     answer_language: str = "auto"
+    manual_id: Optional[str] = None
 
 
 class DiagnosticEnvelope(BaseModel):
@@ -455,6 +546,7 @@ class DiagnosticAPIResponse(BaseModel):
     question: str
     diagnostic: DiagnosticEnvelope
     images: List[ImageMatch]
+    manual_id: Optional[str] = None
 
 
 class ChatMessage(BaseModel):
@@ -470,6 +562,7 @@ class ChatRequest(BaseModel):
     top_k_img: int = 3
     temp: float = 0.4
     answer_language: str = "auto"
+    manual_id: Optional[str] = None
 
 
 class ChatResponse(BaseModel):
@@ -478,6 +571,21 @@ class ChatResponse(BaseModel):
     history: List[ChatMessage]
     texts: List[TextChunk]
     images: List[ImageMatch]
+    manual_id: Optional[str] = None
+
+
+class ManualInfo(BaseModel):
+    manual_id: str
+    display_name: str
+    description: str = ""
+    is_default: bool = False
+    has_cache: bool = False
+    pdf_count: int = 0
+
+
+class ManualListResponse(BaseModel):
+    default_manual_id: str
+    manuals: List[ManualInfo]
 
 
 # -----------------------------
@@ -542,16 +650,45 @@ def v1_page():
     return FileResponse(path, media_type="text/html")
 
 
+@app.get("/api/manuals", response_model=ManualListResponse)
+def api_list_manuals():
+    """List available manuals, including which has a built cache locally."""
+    items: List[ManualInfo] = []
+    for m in manual_registry.list():
+        cache_pkl = Path(m.cache_dir) / "text_metadata_df.pkl"
+        pdf_dir = Path(m.pdf_folder)
+        pdf_count = sum(1 for _ in pdf_dir.glob("*.pdf")) if pdf_dir.exists() else 0
+        items.append(
+            ManualInfo(
+                manual_id=m.manual_id,
+                display_name=m.display_name,
+                description=m.description,
+                is_default=(m.manual_id == DEFAULT_MANUAL_ID),
+                has_cache=cache_pkl.exists(),
+                pdf_count=pdf_count,
+            )
+        )
+    return ManualListResponse(default_manual_id=DEFAULT_MANUAL_ID, manuals=items)
+
+
 @app.post("/api/upload-pdf")
-async def upload_pdf(file: UploadFile = File(...)):
-    """Upload a PDF: save to local PDF_FOLDER and to S3 (if configured)."""
+async def upload_pdf(
+    file: UploadFile = File(...),
+    manual_id: Optional[str] = Form(None),
+):
+    """Upload a PDF: save under the chosen manual's PDF folder and to S3."""
     if not file.filename or not file.filename.lower().endswith(".pdf"):
         return JSONResponse(
             {"ok": False, "error": "Only PDF files allowed"},
             status_code=400,
         )
-    Path(PDF_FOLDER).mkdir(parents=True, exist_ok=True)
-    dest = Path(PDF_FOLDER) / file.filename
+    try:
+        manual = _resolve_manual(manual_id)
+    except RuntimeError as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+
+    Path(manual.pdf_folder).mkdir(parents=True, exist_ok=True)
+    dest = Path(manual.pdf_folder) / file.filename
     try:
         content = await file.read()
         dest.write_bytes(content)
@@ -561,79 +698,98 @@ async def upload_pdf(file: UploadFile = File(...)):
             status_code=500,
         )
     if is_s3_configured():
-        upload_pdf_file_to_s3(str(dest))
-    return JSONResponse({"ok": True, "filename": file.filename})
+        upload_manual_pdf_file_to_s3(manual.manual_id, str(dest))
+    return JSONResponse(
+        {"ok": True, "filename": file.filename, "manual_id": manual.manual_id}
+    )
 
 
 @app.post("/api/clean-cache")
-def api_clean_cache():
-    """Delete local cache files and reset RAG. Next query will rebuild from PDFs (or S3)."""
-    global _rag, _rag_error
-    cache_path = Path(CACHE_DIR)
+def api_clean_cache(manual_id: Optional[str] = None):
+    """Delete local cache for one manual and reset its in-memory pipeline."""
+    try:
+        manual = _resolve_manual(manual_id)
+    except RuntimeError as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+
+    cache_path = Path(manual.cache_dir)
     if cache_path.exists():
         shutil.rmtree(cache_path)
     cache_path.mkdir(parents=True, exist_ok=True)
-    Path(IMAGE_DIR).mkdir(parents=True, exist_ok=True)
-    _clear_rag_state()
-    return JSONResponse({"ok": True, "message": "Local cache cleared. Run a query or Build cache to rebuild."})
+    Path(manual.image_dir).mkdir(parents=True, exist_ok=True)
+    _clear_rag_state(manual.manual_id)
+    return JSONResponse(
+        {
+            "ok": True,
+            "manual_id": manual.manual_id,
+            "message": f"Local cache for {manual.manual_id} cleared. "
+            "Run a query or Build cache to rebuild.",
+        }
+    )
 
 
 @app.post("/api/build-cache")
-def api_build_cache():
-    """Force rebuild metadata from PDFs and upload cache + PDFs to S3."""
-    global _rag, _rag_error
-    _clear_rag_state()
+def api_build_cache(manual_id: Optional[str] = None):
+    """Force rebuild metadata for one manual from PDFs and sync cache + PDFs to S3."""
     try:
-        _sync_from_s3()
-        cfg = RagConfig(
-            project_id=PROJECT_ID,
-            location=LOCATION,
-            model_name="gemini-2.0-flash",
-            embedding_size=1408,
-            embedding_model_name="multimodalembedding@001",
-            image_save_dir=IMAGE_DIR,
-            enable_ocr_fallback=True,
-            ocr_min_chars=40,
-            ocr_dpi=200,
-            ocr_lang=OCR_LANG,
-        )
+        manual = _resolve_manual(manual_id)
+    except RuntimeError as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+
+    _clear_rag_state(manual.manual_id)
+    try:
+        _sync_from_s3(manual)
+        cfg = _build_rag_config(manual)
         rag_instance = MultimodalRAGPipeline(cfg)
         rag_instance.build_metadata(
-            pdf_folder_path=PDF_FOLDER,
-            cache_dir=CACHE_DIR,
+            pdf_folder_path=manual.pdf_folder,
+            cache_dir=manual.cache_dir,
             force_rebuild=True,
             generation_config=GenerationConfig(temperature=0.2),
             ocr_fallback=True,
-            image_save_dir=IMAGE_DIR,
+            image_save_dir=manual.image_dir,
         )
-        counts = _sync_to_s3()
-        _rag = rag_instance
-        return JSONResponse({
-            "ok": True,
-            "message": "Cache rebuilt and synced to S3.",
-            "s3_uploaded": counts,
-        })
+        counts = _sync_to_s3(manual)
+        _remap_image_paths(rag_instance, manual)
+        _pipelines[manual.manual_id] = rag_instance
+        return JSONResponse(
+            {
+                "ok": True,
+                "manual_id": manual.manual_id,
+                "message": f"Cache for {manual.manual_id} rebuilt and synced to S3.",
+                "s3_uploaded": counts,
+            }
+        )
     except Exception as e:
         return JSONResponse(
-            {"ok": False, "error": str(e)},
+            {"ok": False, "manual_id": manual.manual_id, "error": str(e)},
             status_code=500,
         )
 
 
 @app.post("/api/sync-to-s3")
-def api_sync_to_s3():
-    """Upload current local cache and PDFs to S3."""
-    counts = _sync_to_s3()
+def api_sync_to_s3(manual_id: Optional[str] = None):
+    """Upload one manual's local cache and PDFs to S3."""
+    try:
+        manual = _resolve_manual(manual_id)
+    except RuntimeError as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+
     if not is_s3_configured():
         return JSONResponse(
             {"ok": False, "error": "S3 not configured. Set AWS_* and S3_BUCKET_NAME."},
             status_code=400,
         )
-    return JSONResponse({
-        "ok": True,
-        "message": f"Uploaded {counts['cache']} cache file(s), {counts['pdfs']} PDF(s) to S3.",
-        "uploaded": counts,
-    })
+    counts = _sync_to_s3(manual)
+    return JSONResponse(
+        {
+            "ok": True,
+            "manual_id": manual.manual_id,
+            "message": f"Uploaded {counts['cache']} cache file(s), "
+            f"{counts['pdfs']} PDF(s) to S3 for {manual.manual_id}.",
+            "uploaded": counts,
+        }
+    )
 
 
 @app.post("/api/query", response_model=QueryResponse)
@@ -650,7 +806,8 @@ def api_query(payload: QueryRequest):
       }
     """
     try:
-        rag = _get_rag()
+        manual = _resolve_manual(payload.manual_id)
+        rag = _get_rag(manual.manual_id)
     except RuntimeError as e:
         return JSONResponse(
             {
@@ -683,12 +840,13 @@ def api_query(payload: QueryRequest):
         answer = str(answer)
 
     texts_norm = _normalize_text_matches(text_matches)
-    images_norm = _normalize_image_matches(image_matches)
+    images_norm = _normalize_image_matches(image_matches, manual.manual_id)
 
     return QueryResponse(
         answer=answer,
         texts=[TextChunk(**t) for t in texts_norm],
         images=[ImageMatch(**img) for img in images_norm],
+        manual_id=manual.manual_id,
     )
 
 
@@ -712,7 +870,8 @@ def api_query_myanmar(payload: MyanmarQueryRequest):
         )
 
     try:
-        rag = _get_rag()
+        manual = _resolve_manual(payload.manual_id)
+        rag = _get_rag(manual.manual_id)
     except RuntimeError as e:
         return JSONResponse(
             {
@@ -765,7 +924,7 @@ def api_query_myanmar(payload: MyanmarQueryRequest):
         )
 
     texts_norm = _normalize_text_matches(text_matches)
-    images_norm = _normalize_image_matches(image_matches)
+    images_norm = _normalize_image_matches(image_matches, manual.manual_id)
 
     return MyanmarQueryResponse(
         answer=myanmar_answer,
@@ -773,6 +932,7 @@ def api_query_myanmar(payload: MyanmarQueryRequest):
         images=[ImageMatch(**img) for img in images_norm],
         english_query=english_query if payload.include_intermediate_english else None,
         english_answer=english_answer if payload.include_intermediate_english else None,
+        manual_id=manual.manual_id,
     )
 
 
@@ -790,7 +950,8 @@ def api_query_japanese(payload: JapaneseQueryRequest):
         )
 
     try:
-        rag = _get_rag()
+        manual = _resolve_manual(payload.manual_id)
+        rag = _get_rag(manual.manual_id)
     except RuntimeError as e:
         return JSONResponse(
             {
@@ -843,7 +1004,7 @@ def api_query_japanese(payload: JapaneseQueryRequest):
         )
 
     texts_norm = _normalize_text_matches(text_matches)
-    images_norm = _normalize_image_matches(image_matches)
+    images_norm = _normalize_image_matches(image_matches, manual.manual_id)
 
     return JapaneseQueryResponse(
         answer=japanese_answer,
@@ -851,6 +1012,7 @@ def api_query_japanese(payload: JapaneseQueryRequest):
         images=[ImageMatch(**img) for img in images_norm],
         english_query=english_query if payload.include_intermediate_english else None,
         english_answer=english_answer if payload.include_intermediate_english else None,
+        manual_id=manual.manual_id,
     )
 
 
@@ -871,7 +1033,8 @@ def api_query_with_optional_image(payload: QueryWithOptionalImageRequest):
       }
     """
     try:
-        rag = _get_rag()
+        manual = _resolve_manual(payload.manual_id)
+        rag = _get_rag(manual.manual_id)
     except RuntimeError as e:
         return JSONResponse(
             {
@@ -918,12 +1081,13 @@ def api_query_with_optional_image(payload: QueryWithOptionalImageRequest):
         )
 
     texts_norm = _normalize_text_matches(text_matches)
-    images_norm = _normalize_image_matches(image_matches)
+    images_norm = _normalize_image_matches(image_matches, manual.manual_id)
 
     return QueryResponse(
         answer=answer,
         texts=[TextChunk(**t) for t in texts_norm],
         images=[ImageMatch(**img) for img in images_norm],
+        manual_id=manual.manual_id,
     )
 
 
@@ -935,6 +1099,7 @@ async def api_query_upload(
     temp: float = Form(0.2),
     answer_language: str = Form("auto"),
     image: Optional[UploadFile] = File(None),
+    manual_id: Optional[str] = Form(None),
 ):
     """
     Multipart endpoint: question + optional uploaded image.
@@ -942,7 +1107,8 @@ async def api_query_upload(
     Answer is generated from text-context (same behavior as /api/query-with-image).
     """
     try:
-        rag = _get_rag()
+        manual = _resolve_manual(manual_id)
+        rag = _get_rag(manual.manual_id)
     except RuntimeError as e:
         return JSONResponse(
             {
@@ -974,7 +1140,7 @@ async def api_query_upload(
     image_matches: Dict[Any, Dict[str, Any]]
     if image and image.filename:
         # Save to a temp location on disk for embedding extraction
-        qimg_dir = Path(CACHE_DIR) / "query_images"
+        qimg_dir = Path(manual.cache_dir) / "query_images"
         qimg_dir.mkdir(parents=True, exist_ok=True)
         suffix = Path(image.filename).suffix.lower() or ".png"
         dest = qimg_dir / f"query_{uuid.uuid4().hex}{suffix}"
@@ -994,12 +1160,13 @@ async def api_query_upload(
         )
 
     texts_norm = _normalize_text_matches(text_matches)
-    images_norm = _normalize_image_matches(image_matches)
+    images_norm = _normalize_image_matches(image_matches, manual.manual_id)
 
     return QueryResponse(
         answer=answer,
         texts=[TextChunk(**t) for t in texts_norm],
         images=[ImageMatch(**img) for img in images_norm],
+        manual_id=manual.manual_id,
     )
 
 
@@ -1010,7 +1177,8 @@ def api_v1_diagnose(payload: DiagnosticPayload):
     Returns structured JSON used by the /v1 dashboard UI.
     """
     try:
-        rag = _get_rag()
+        manual = _resolve_manual(payload.manual_id)
+        rag = _get_rag(manual.manual_id)
     except RuntimeError as e:
         raise RuntimeError(
             f"RAG not available: {e}. "
@@ -1081,12 +1249,13 @@ def api_v1_diagnose(payload: DiagnosticPayload):
         torque_spec=torque_spec,
     )
 
-    images_norm = _normalize_image_matches(image_matches)
+    images_norm = _normalize_image_matches(image_matches, manual.manual_id)
 
     return DiagnosticAPIResponse(
         question=payload.question,
         diagnostic=envelope,
         images=[ImageMatch(**img) for img in images_norm],
+        manual_id=manual.manual_id,
     )
 
 
@@ -1098,6 +1267,7 @@ async def api_v1_diagnose_upload(
     temp: float = Form(0.4),
     answer_language: str = Form("auto"),
     image: Optional[UploadFile] = File(None),
+    manual_id: Optional[str] = Form(None),
 ):
     """
     Multipart variant of v1 diagnostic endpoint that accepts an optional image.
@@ -1105,7 +1275,8 @@ async def api_v1_diagnose_upload(
     summary is still based on text + image descriptions.
     """
     try:
-        rag = _get_rag()
+        manual = _resolve_manual(manual_id)
+        rag = _get_rag(manual.manual_id)
     except RuntimeError as e:
         return JSONResponse(
             {
@@ -1117,7 +1288,7 @@ async def api_v1_diagnose_upload(
 
     # Compute image matches based on uploaded image (if any)
     if image and image.filename:
-        qimg_dir = Path(CACHE_DIR) / "query_images"
+        qimg_dir = Path(manual.cache_dir) / "query_images"
         qimg_dir.mkdir(parents=True, exist_ok=True)
         suffix = Path(image.filename).suffix.lower() or ".png"
         dest = qimg_dir / f"query_{uuid.uuid4().hex}{suffix}"
@@ -1194,12 +1365,13 @@ async def api_v1_diagnose_upload(
         torque_spec=torque_spec,
     )
 
-    images_norm = _normalize_image_matches(image_matches)
+    images_norm = _normalize_image_matches(image_matches, manual.manual_id)
 
     return DiagnosticAPIResponse(
         question=question,
         diagnostic=envelope,
         images=[ImageMatch(**img) for img in images_norm],
+        manual_id=manual.manual_id,
     )
 
 
@@ -1228,9 +1400,11 @@ def query(
     temp: float = Form(0.5),
     answer_language: str = Form("auto"),
     image: Optional[UploadFile] = File(None),
+    manual_id: Optional[str] = Form(None),
 ):
     try:
-        rag = _get_rag()
+        manual = _resolve_manual(manual_id)
+        rag = _get_rag(manual.manual_id)
     except RuntimeError as e:
         html = _render_page(
             ran=True,
@@ -1250,7 +1424,7 @@ def query(
 
     # 2) Images: if an image is uploaded, use image-embedding retrieval
     if image and image.filename:
-        qimg_dir = Path(CACHE_DIR) / "query_images"
+        qimg_dir = Path(manual.cache_dir) / "query_images"
         qimg_dir.mkdir(parents=True, exist_ok=True)
         suffix = Path(image.filename).suffix.lower() or ".png"
         dest = qimg_dir / f"query_{uuid.uuid4().hex}{suffix}"
@@ -1299,7 +1473,7 @@ def query(
         answer_language=answer_language,
         answer=answer,
         texts=_normalize_text_matches(text_matches),
-        images=_normalize_image_matches(image_matches),
+        images=_normalize_image_matches(image_matches, manual.manual_id),
     )
     return HTMLResponse(html)
 
@@ -1345,7 +1519,8 @@ def _condense_conversational_query(rag, question: str, history: List[ChatMessage
 def api_chat(payload: ChatRequest):
     """Multi-turn conversational RAG backend endpoint."""
     try:
-        rag = _get_rag()
+        manual = _resolve_manual(payload.manual_id)
+        rag = _get_rag(manual.manual_id)
     except RuntimeError as e:
         return JSONResponse({"detail": f"RAG not ready: {e}"}, status_code=503)
 
@@ -1393,7 +1568,7 @@ def api_chat(payload: ChatRequest):
 
     # Normalize responses
     texts_norm = _normalize_text_matches(text_matches)
-    images_norm = _normalize_image_matches(image_matches)
+    images_norm = _normalize_image_matches(image_matches, manual.manual_id)
 
     # Update history list
     new_history = list(payload.history)
@@ -1405,7 +1580,8 @@ def api_chat(payload: ChatRequest):
         answer=answer,
         history=new_history,
         texts=[TextChunk(**t) for t in texts_norm],
-        images=[ImageMatch(**img) for img in images_norm]
+        images=[ImageMatch(**img) for img in images_norm],
+        manual_id=manual.manual_id,
     )
 
 
@@ -1418,9 +1594,10 @@ def debug_generator_page():
 
 
 @app.get("/api/models")
-def get_available_models():
+def get_available_models(manual_id: Optional[str] = None):
     try:
-        rag = _get_rag()
+        manual = _resolve_manual(manual_id)
+        rag = _get_rag(manual.manual_id)
         if rag.text_metadata_df is not None:
             files = list(rag.text_metadata_df["file_name"].unique())
             models = []
@@ -1430,11 +1607,14 @@ def get_available_models():
                     "id": f,
                     "name": name_without_ext.upper()
                 })
-            return {"models": models}
+            return {"manual_id": manual.manual_id, "models": models}
     except Exception as e:
         print(f"Error fetching models from cache: {e}")
     # Fallback to defaults if cache is not loaded yet
-    return {"models": [{"id": "ym358a.pdf", "name": "YM358A"}]}
+    return {
+        "manual_id": (manual_id or DEFAULT_MANUAL_ID),
+        "models": [{"id": "ym358a.pdf", "name": "YM358A"}],
+    }
 
 
 @app.post("/api/generate-random-question")
@@ -1442,9 +1622,10 @@ def api_generate_random_question(payload: GenerateQuestionRequest):
     import json
     import datetime
     import random
-    
+
     try:
-        rag = _get_rag()
+        manual = _resolve_manual(payload.manual_id)
+        rag = _get_rag(manual.manual_id)
     except RuntimeError as e:
         return JSONResponse(
             {"error": f"RAG not available: {e}"},
@@ -1645,8 +1826,8 @@ def api_generate_random_question(payload: GenerateQuestionRequest):
         }
         results.append(question_item)
 
-    # Persistent JSON storage
-    questions_json_path = Path(CACHE_DIR) / "generated_questions.json"
+    # Persistent JSON storage (per-manual file under that manual's cache dir)
+    questions_json_path = Path(manual.cache_dir) / "generated_questions.json"
     existing_questions = []
     if questions_json_path.exists():
         try:
@@ -1656,11 +1837,11 @@ def api_generate_random_question(payload: GenerateQuestionRequest):
                     existing_questions = []
         except Exception as e:
             print(f"Error reading existing questions JSON: {e}")
-            
+
     existing_questions.extend(results)
-    
+
     try:
-        Path(CACHE_DIR).mkdir(parents=True, exist_ok=True)
+        Path(manual.cache_dir).mkdir(parents=True, exist_ok=True)
         with open(questions_json_path, "w", encoding="utf-8") as f:
             json.dump(existing_questions, f, ensure_ascii=False, indent=2)
     except Exception as e:
