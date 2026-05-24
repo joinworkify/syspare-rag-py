@@ -9,6 +9,7 @@ from vertexai.language_models import TextEmbeddingModel
 from vertexai.vision_models import Image as VisionImage
 from vertexai.vision_models import MultiModalEmbeddingModel
 
+from syspare_rag._retry import retry_call
 from syspare_rag.config import (
     IMAGE_EMBEDDING_DIMENSION_DEFAULT,
     IMAGE_EMBEDDING_MODEL,
@@ -47,7 +48,11 @@ class VertexTextEmbedder:
     def embed_text(self, text: str) -> List[float]:
         if not text or not text.strip():
             raise ValueError("Cannot embed empty text")
-        embeddings = self._model.get_embeddings([text])
+        embeddings = retry_call(
+            self._model.get_embeddings,
+            [text],
+            label="text-embedding",
+        )
         vector = list(embeddings[0].values)
         validate_embedding_dimension(vector, self.dimension, label="text embedding")
         return vector
@@ -55,7 +60,11 @@ class VertexTextEmbedder:
     def embed_texts(self, texts: Sequence[str]) -> List[List[float]]:
         if not texts:
             return []
-        embeddings = self._model.get_embeddings(list(texts))
+        embeddings = retry_call(
+            self._model.get_embeddings,
+            list(texts),
+            label="text-embedding-batch",
+        )
         vectors: List[List[float]] = []
         for embedding in embeddings:
             vector = list(embedding.values)
@@ -86,10 +95,12 @@ class VertexImageEmbedder:
     ) -> List[float]:
         size = embedding_size or self.default_dimension
         image = VisionImage.load_from_file(image_uri)
-        embeddings = self._model.get_embeddings(
+        embeddings = retry_call(
+            self._model.get_embeddings,
             image=image,
             contextual_text=contextual_text,
             dimension=size,
+            label="image-embedding",
         )
         return list(embeddings.image_embedding)
 
