@@ -409,6 +409,28 @@ def get_image_for_gemini(
 from typing import List, Optional
 
 
+from syspare_rag._retry import retry_call as _retry_call
+
+
+def _gemini_generate_with_retry(
+    generative_multimodal_model,
+    model_input,
+    *,
+    generation_config,
+    safety_settings,
+    stream: bool,
+):
+    """Call generate_content with exponential backoff on transient failures."""
+    return _retry_call(
+        generative_multimodal_model.generate_content,
+        model_input,
+        generation_config=generation_config,
+        stream=stream,
+        safety_settings=safety_settings,
+        label="gemini-generate",
+    )
+
+
 def get_gemini_response(
     generative_multimodal_model,
     model_input: List[str],
@@ -428,13 +450,25 @@ def get_gemini_response(
 
     - If stream=True: iterates over chunks and concatenates chunk.text
     - If stream=False: returns response.text directly (GenerationResponse is NOT iterable)
+
+    Transient failures (429/503/quota/timeout) are retried with exponential backoff
+    so long-running batch jobs (e.g. OCR-heavy cache rebuilds) don't die mid-run.
     """
-    response = generative_multimodal_model.generate_content(
-        model_input,
-        generation_config=generation_config,
-        stream=stream,
-        safety_settings=safety_settings,
-    )
+    try:
+        response = _gemini_generate_with_retry(
+            generative_multimodal_model,
+            model_input,
+            generation_config=generation_config,
+            safety_settings=safety_settings,
+            stream=stream,
+        )
+    except Exception as e:
+        print(
+            "Exception occurred while calling gemini (after retries). "
+            "Try lowering safety thresholds [safety_settings: BLOCK_NONE ] if not already done. -----",
+            e,
+        )
+        return "Exception occurred"
 
     #  Non-streaming: response is a single GenerationResponse (not iterable)
     if not stream:
@@ -442,7 +476,7 @@ def get_gemini_response(
             return (getattr(response, "text", None) or "").strip()
         except Exception as e:
             print(
-                "Exception occurred while calling gemini (non-stream). "
+                "Exception occurred while reading gemini response (non-stream). "
                 "Try lowering safety thresholds [safety_settings: BLOCK_NONE ] if not already done. -----",
                 e,
             )
@@ -456,7 +490,7 @@ def get_gemini_response(
                 response_list.append(chunk.text)
         except Exception as e:
             print(
-                "Exception occurred while calling gemini (stream). "
+                "Exception occurred while iterating gemini stream chunk. "
                 "Try lowering safety thresholds [safety_settings: BLOCK_NONE ] if not already done. -----",
                 e,
             )
@@ -522,9 +556,21 @@ def get_image_metadata_df(
         A Pandas DataFrame with the extracted image path, image description, and image embeddings for each image.
     """
 
+    required_keys = {
+        "img_num",
+        "img_path",
+        "img_desc",
+        "mm_embedding_from_img_only",
+        "text_embedding_from_image_description",
+    }
     final_data_image: List[Dict] = []
     for key, values in image_metadata.items():
         for _, image_values in values.items():
+            # Image extraction is best-effort: some pages produce empty dicts
+            # when PyMuPDF fails to write a pixmap (corrupt xref, etc).
+            # Skip those instead of crashing the whole build at the end.
+            if not isinstance(image_values, dict) or not required_keys.issubset(image_values):
+                continue
             data: Dict = {}
             data["file_name"] = filename
             data["page_num"] = int(key) + 1
