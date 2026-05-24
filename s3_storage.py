@@ -128,3 +128,70 @@ def upload_pdf_file_to_s3(local_path: str, object_name: Optional[str] = None) ->
     client = _get_client()
     client.upload_file(str(path), get_bucket_name(), key)
     return True
+
+
+# -----------------------------
+# Per-manual S3 helpers
+# -----------------------------
+def manual_s3_prefix(manual_id: str) -> str:
+    """S3 prefix root for a manual: {S3_RAG_PREFIX}/manuals/<manual_id>."""
+    return f"{get_s3_prefix()}/manuals/{manual_id}"
+
+
+def manual_cache_s3_prefix(manual_id: str) -> str:
+    return f"{manual_s3_prefix(manual_id)}/cache"
+
+
+def manual_pdf_s3_prefix(manual_id: str) -> str:
+    return f"{manual_s3_prefix(manual_id)}/pdf"
+
+
+def download_manual_cache_from_s3(manual_id: str, cache_dir: str) -> int:
+    """Download a manual's cache from S3 into cache_dir. Returns file count."""
+    if not is_s3_configured():
+        return 0
+    return sync_s3_to_local(
+        get_bucket_name(), manual_cache_s3_prefix(manual_id), cache_dir
+    )
+
+
+def upload_manual_cache_to_s3(manual_id: str, cache_dir: str) -> int:
+    """Upload manual's cache_dir to S3. Returns file count."""
+    if not is_s3_configured():
+        return 0
+    return sync_local_to_s3(
+        cache_dir, get_bucket_name(), manual_cache_s3_prefix(manual_id)
+    )
+
+
+def download_manual_pdfs_from_s3(manual_id: str, pdf_folder: str) -> int:
+    """Download a manual's PDFs from S3 into pdf_folder. Returns file count."""
+    if not is_s3_configured():
+        return 0
+    return sync_s3_to_local(
+        get_bucket_name(), manual_pdf_s3_prefix(manual_id), pdf_folder
+    )
+
+
+def upload_manual_pdfs_to_s3(manual_id: str, pdf_folder: str) -> int:
+    """Upload manual's pdf_folder to S3. Returns file count."""
+    if not is_s3_configured():
+        return 0
+    return sync_local_to_s3(
+        pdf_folder, get_bucket_name(), manual_pdf_s3_prefix(manual_id)
+    )
+
+
+def upload_manual_pdf_file_to_s3(
+    manual_id: str, local_path: str, object_name: Optional[str] = None
+) -> bool:
+    """Upload a single PDF into a manual's S3 pdf/ prefix. Returns True on success."""
+    if not is_s3_configured():
+        return False
+    path = Path(local_path)
+    if not path.is_file():
+        return False
+    name = object_name or path.name
+    key = f"{manual_pdf_s3_prefix(manual_id)}/{name}"
+    _get_client().upload_file(str(path), get_bucket_name(), key)
+    return True
