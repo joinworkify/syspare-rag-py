@@ -896,6 +896,7 @@ def get_similar_image_from_query(
     image_emb: bool = True,
     top_n: int = 3,
     embedding_size: int = 128,
+    load_image_object: bool = False,
 ) -> Dict[int, Dict[str, Any]]:
     """
     Finds the top N most similar images from a metadata DataFrame based on a text query or an image query.
@@ -909,6 +910,7 @@ def get_similar_image_from_query(
         image_emb: Whether to use image embeddings (True) or text captions (False) for comparisons.
         top_n: The number of most similar images to return.
         embedding_size: The dimensionality of the image embeddings (only used if image_emb is True).
+        load_image_object: Whether to load/download the actual Image object bytes into memory (disabled by default for speed).
 
     Returns:
         A dictionary containing information about the top N most similar images, including cosine scores, image objects, paths, page numbers, text excerpts, and descriptions.
@@ -950,9 +952,11 @@ def get_similar_image_from_query(
             matched_imageno
         ]
 
-        # Load image — handle both local paths and S3/HTTP URLs
+        # Load image optionally — handle both local paths and S3/HTTP URLs
         _img_path = image_metadata_df.iloc[indexvalue]["img_path"]
-        if str(_img_path).startswith("http"):
+        if not load_image_object:
+            final_images[matched_imageno]["image_object"] = None
+        elif str(_img_path).startswith("http"):
             final_images[matched_imageno]["image_object"] = Image.from_bytes(
                 requests.get(_img_path).content
             )

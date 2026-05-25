@@ -661,6 +661,7 @@ class Pipeline:
         image_emb: bool = True,
         top_n: int = 3,
         embedding_size: int = 128,
+        load_image_object: bool = False,
     ) -> Dict[int, Dict[str, Any]]:
         if image_emb:
             user_query_image_embedding = self.get_user_query_image_embeddings(
@@ -689,9 +690,18 @@ class Pipeline:
             final_images[matched_imageno]["cosine_score"] = top_n_cosine_values[
                 matched_imageno
             ]
-            final_images[matched_imageno]["image_object"] = Image.load_from_file(
-                image_metadata_df.iloc[indexvalue]["img_path"]
-            )
+            _img_path = image_metadata_df.iloc[indexvalue]["img_path"]
+            if not load_image_object:
+                final_images[matched_imageno]["image_object"] = None
+            elif str(_img_path).startswith("http"):
+                import requests
+                final_images[matched_imageno]["image_object"] = Image.from_bytes(
+                    requests.get(_img_path).content
+                )
+            else:
+                final_images[matched_imageno]["image_object"] = Image.load_from_file(
+                    _img_path
+                )
             final_images[matched_imageno]["file_name"] = image_metadata_df.iloc[indexvalue][
                 "file_name"
             ]
