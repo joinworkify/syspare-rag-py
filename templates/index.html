@@ -283,17 +283,17 @@
             if (btn) { btn.disabled = false; btn.classList.remove('opacity-50'); }
           });
       }
-      document.getElementById('btn-clean-cache')?.addEventListener('click', function () { 
+      document.getElementById('btn-clean-cache')?.addEventListener('click', function () {
         var manualId = document.getElementById('manual_id')?.value || '';
-        postAction('/api/clean-cache?manual_id=' + encodeURIComponent(manualId), this); 
+        postAction('/api/clean-cache?manual_id=' + encodeURIComponent(manualId), this);
       });
-      document.getElementById('btn-build-cache')?.addEventListener('click', function () { 
+      document.getElementById('btn-build-cache')?.addEventListener('click', function () {
         var manualId = document.getElementById('manual_id')?.value || '';
-        postAction('/api/build-cache?manual_id=' + encodeURIComponent(manualId), this); 
+        postAction('/api/build-cache?manual_id=' + encodeURIComponent(manualId), this);
       });
-      document.getElementById('btn-sync-s3')?.addEventListener('click', function () { 
+      document.getElementById('btn-sync-s3')?.addEventListener('click', function () {
         var manualId = document.getElementById('manual_id')?.value || '';
-        postAction('/api/sync-to-s3?manual_id=' + encodeURIComponent(manualId), this); 
+        postAction('/api/sync-to-s3?manual_id=' + encodeURIComponent(manualId), this);
       });
     })();
     
