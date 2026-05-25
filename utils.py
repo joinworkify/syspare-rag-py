@@ -971,19 +971,20 @@ def get_similar_image_from_query(
             "page_num"
         ]
 
+        page_text_series = text_metadata_df[
+            (
+                text_metadata_df["page_num"].isin(
+                    [final_images[matched_imageno]["page_num"]]
+                )
+            )
+            & (
+                text_metadata_df["file_name"].isin(
+                    [final_images[matched_imageno]["file_name"]]
+                )
+            )
+        ]["text"].dropna()
         final_images[matched_imageno]["page_text"] = np.unique(
-            text_metadata_df[
-                (
-                    text_metadata_df["page_num"].isin(
-                        [final_images[matched_imageno]["page_num"]]
-                    )
-                )
-                & (
-                    text_metadata_df["file_name"].isin(
-                        [final_images[matched_imageno]["file_name"]]
-                    )
-                )
-            ]["text"].values
+            page_text_series.astype(str).values
         )
 
         # Store image description

@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -9,7 +10,9 @@
   <!-- Outfit Google Font -->
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
+    rel="stylesheet" />
   <style type="text/tailwindcss">
     @theme {
       --font-sans: "Outfit", ui-sans-serif, system-ui, sans-serif;
@@ -17,31 +20,39 @@
     }
   </style>
 </head>
-<body class="min-h-screen bg-slate-950 text-slate-100 font-sans antialiased selection:bg-emerald-500/30 selection:text-emerald-300">
-  
+
+<body
+  class="min-h-screen bg-slate-950 text-slate-100 font-sans antialiased selection:bg-emerald-500/30 selection:text-emerald-300">
+
   <!-- Subtle top ambient glow -->
-  <div class="absolute top-0 left-1/2 -translate-x-1/2 w-full max-w-7xl h-[300px] bg-gradient-to-b from-emerald-500/10 via-teal-500/5 to-transparent blur-3xl pointer-events-none"></div>
+  <div
+    class="absolute top-0 left-1/2 -translate-x-1/2 w-full max-w-7xl h-[300px] bg-gradient-to-b from-emerald-500/10 via-teal-500/5 to-transparent blur-3xl pointer-events-none">
+  </div>
 
   <div class="max-w-6xl mx-auto px-4 sm:px-6 py-10 relative z-10">
     <!-- Header -->
     <header class="mb-10 flex flex-wrap items-center justify-between gap-4 border-b border-slate-800 pb-6">
       <div>
         <div class="flex items-center gap-2.5">
-          <span class="inline-flex items-center justify-center px-2.5 py-1 rounded-md bg-indigo-500/10 border border-indigo-500/30 text-indigo-400 text-xs font-semibold tracking-wide uppercase">
+          <span
+            class="inline-flex items-center justify-center px-2.5 py-1 rounded-md bg-indigo-500/10 border border-indigo-500/30 text-indigo-400 text-xs font-semibold tracking-wide uppercase">
             RAG Pipeline
           </span>
         </div>
-        <h1 class="text-3xl font-bold bg-gradient-to-r from-emerald-400 via-teal-300 to-indigo-400 bg-clip-text text-transparent mt-2">
+        <h1
+          class="text-3xl font-bold bg-gradient-to-r from-emerald-400 via-teal-300 to-indigo-400 bg-clip-text text-transparent mt-2">
           Multimodal RAG Viewer
         </h1>
         <p class="text-sm text-slate-400 mt-1">
           Query -> retrieve matching text & diagrams -> Gemini multimodal answers
         </p>
       </div>
-      
-      <a href="/debug-generator" class="inline-flex items-center px-4 py-2 rounded-lg bg-emerald-500 text-slate-950 text-sm font-semibold hover:bg-emerald-400 shadow-lg shadow-emerald-500/15 hover:shadow-emerald-500/25 transition-all duration-200 gap-2">
+
+      <a href="/debug-generator"
+        class="inline-flex items-center px-4 py-2 rounded-lg bg-emerald-500 text-slate-950 text-sm font-semibold hover:bg-emerald-400 shadow-lg shadow-emerald-500/15 hover:shadow-emerald-500/25 transition-all duration-200 gap-2">
         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z" />
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"
+            d="M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z" />
         </svg>
         Debug Question Generator
       </a>
@@ -54,50 +65,45 @@
           <label for="q" class="block text-xs font-semibold text-slate-400 tracking-wider uppercase mb-2">
             Your Technical Question
           </label>
-          <input
-            id="q"
-            name="q"
-            type="text"
-            value="{{ q|e }}"
+          <input id="q" name="q" type="text" value="{{ q|e }}"
             placeholder="e.g. Every 2 years what should we do for the safety precautions of YM358A?"
-            class="w-full px-4 py-3 bg-slate-950 border border-slate-800 rounded-xl focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 outline-none transition text-slate-200 placeholder-slate-500 font-medium"
-          />
+            class="w-full px-4 py-3 bg-slate-950 border border-slate-800 rounded-xl focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 outline-none transition text-slate-200 placeholder-slate-500 font-medium" />
         </div>
-        
+
         <div>
           <label for="image" class="block text-xs font-semibold text-slate-400 tracking-wider uppercase mb-2">
             Optional query image (for image-embedding retrieval)
           </label>
           <div class="relative bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 flex items-center gap-3">
             <svg class="w-5 h-5 text-slate-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
             </svg>
-            <input
-              id="image"
-              name="image"
-              type="file"
-              accept="image/*"
-              class="block w-full text-sm text-slate-400 file:mr-4 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-slate-900 file:text-slate-300 hover:file:bg-slate-850 cursor-pointer"
-            />
+            <input id="image" name="image" type="file" accept="image/*"
+              class="block w-full text-sm text-slate-400 file:mr-4 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-slate-900 file:text-slate-300 hover:file:bg-slate-850 cursor-pointer" />
           </div>
           <p class="mt-1.5 text-xs text-slate-500 leading-normal">
-            If an image is uploaded, diagram retrieval will use direct visual similarity search rather than keyword search.
+            If an image is uploaded, diagram retrieval will use direct visual similarity search rather than keyword
+            search.
           </p>
         </div>
 
         <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
           <div>
-            <label for="top_k_text" class="block text-xs font-semibold text-slate-400 tracking-wider uppercase mb-2">Top-K Text</label>
+            <label for="top_k_text"
+              class="block text-xs font-semibold text-slate-400 tracking-wider uppercase mb-2">Top-K Text</label>
             <input id="top_k_text" name="top_k_text" type="number" value="{{ top_k_text }}" min="1" max="20"
               class="w-full px-4 py-2.5 bg-slate-950 border border-slate-800 rounded-xl focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 outline-none transition text-slate-200 font-medium" />
           </div>
           <div>
-            <label for="top_k_img" class="block text-xs font-semibold text-slate-400 tracking-wider uppercase mb-2">Top-K Images</label>
+            <label for="top_k_img"
+              class="block text-xs font-semibold text-slate-400 tracking-wider uppercase mb-2">Top-K Images</label>
             <input id="top_k_img" name="top_k_img" type="number" value="{{ top_k_img }}" min="1" max="20"
               class="w-full px-4 py-2.5 bg-slate-950 border border-slate-800 rounded-xl focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 outline-none transition text-slate-200 font-medium" />
           </div>
           <div>
-            <label for="temp" class="block text-xs font-semibold text-slate-400 tracking-wider uppercase mb-2">Temperature</label>
+            <label for="temp"
+              class="block text-xs font-semibold text-slate-400 tracking-wider uppercase mb-2">Temperature</label>
             <input id="temp" name="temp" type="number" value="{{ temp }}" min="0" max="2" step="0.1"
               class="w-full px-4 py-2.5 bg-slate-950 border border-slate-800 rounded-xl focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 outline-none transition text-slate-200 font-medium" />
           </div>
@@ -105,12 +111,14 @@
 
         <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
           <div>
-            <label for="manual_id" class="block text-xs font-semibold text-slate-400 tracking-wider uppercase mb-2">Select Manual</label>
+            <label for="manual_id"
+              class="block text-xs font-semibold text-slate-400 tracking-wider uppercase mb-2">Select Manual</label>
             <div class="relative">
               <select id="manual_id" name="manual_id"
                 class="w-full px-4 py-2.5 bg-slate-950 border border-slate-800 rounded-xl focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 outline-none transition text-slate-200 font-medium appearance-none cursor-pointer">
                 {% for m in manuals %}
-                <option value="{{ m.manual_id }}" {% if m.manual_id == selected_manual_id %}selected{% endif %}>{{ m.display_name }}</option>
+                <option value="{{ m.manual_id }}" {% if m.manual_id==selected_manual_id %}selected{% endif %}>{{
+                  m.display_name }}</option>
                 {% endfor %}
               </select>
               <div class="absolute inset-y-0 right-4 flex items-center pointer-events-none text-slate-500">
@@ -122,14 +130,16 @@
           </div>
 
           <div>
-            <label for="answer_language" class="block text-xs font-semibold text-slate-400 tracking-wider uppercase mb-2">Answer Language</label>
+            <label for="answer_language"
+              class="block text-xs font-semibold text-slate-400 tracking-wider uppercase mb-2">Answer Language</label>
             <div class="relative">
               <select id="answer_language" name="answer_language"
                 class="w-full px-4 py-2.5 bg-slate-950 border border-slate-800 rounded-xl focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 outline-none transition text-slate-200 font-medium appearance-none cursor-pointer">
-                <option value="auto" {% if (answer_language|default('auto')) == 'auto' %}selected{% endif %}>Auto (follow question)</option>
-                <option value="en" {% if (answer_language|default('auto')) == 'en' %}selected{% endif %}>English</option>
-                <option value="my" {% if (answer_language|default('auto')) == 'my' %}selected{% endif %}>Myanmar</option>
-                <option value="ja" {% if (answer_language|default('auto')) == 'ja' %}selected{% endif %}>Japanese</option>
+                <option value="auto" {% if (answer_language|default('auto'))=='auto' %}selected{% endif %}>Auto (follow
+                  question)</option>
+                <option value="en" {% if (answer_language|default('auto'))=='en' %}selected{% endif %}>English</option>
+                <option value="my" {% if (answer_language|default('auto'))=='my' %}selected{% endif %}>Myanmar</option>
+                <option value="ja" {% if (answer_language|default('auto'))=='ja' %}selected{% endif %}>Japanese</option>
               </select>
               <div class="absolute inset-y-0 right-4 flex items-center pointer-events-none text-slate-500">
                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -187,28 +197,36 @@
       <div class="xl:col-span-5 bg-slate-900/60 rounded-2xl border border-slate-800 shadow-xl p-6">
         <h2 class="text-sm font-semibold text-slate-300 mb-2 flex items-center gap-2">
           <svg class="w-4.5 h-4.5 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+              d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
           </svg>
           Retrieved Images
         </h2>
         <p class="text-xs text-slate-500 mb-4">Click diagram thumbnails to enlarge</p>
-        
+
         <div class="grid grid-cols-2 gap-3" id="rag-images">
           {% for img in images %}
-          <button type="button" class="rag-image-thumb text-left rounded-xl border border-slate-800 overflow-hidden bg-slate-950 hover:ring-2 hover:ring-emerald-500/50 hover:border-emerald-400 transition duration-200 cursor-pointer focus:outline-none"
-            data-src="{{ img.img_url }}"
-            data-caption="{{ img.caption|e }}"
-            data-doc="{{ img.doc|e if img.doc else '' }}"
-            data-page="{{ img.page|e if img.page else '' }}">
-            
-            <img src="{{ img.img_url }}" alt="" class="w-full aspect-[4/3] object-cover pointer-events-none" loading="lazy" />
+          <button type="button"
+            class="rag-image-thumb text-left rounded-xl border border-slate-800 overflow-hidden bg-slate-950 hover:ring-2 hover:ring-emerald-500/50 hover:border-emerald-400 transition duration-200 cursor-pointer focus:outline-none"
+            data-src="{{ img.img_url }}" data-caption="{{ img.caption|e }}"
+            data-doc="{{ img.doc|e if img.doc else '' }}" data-page="{{ img.page|e if img.page else '' }}">
+
+            <img src="{{ img.img_url }}" alt="" class="w-full aspect-[4/3] object-cover pointer-events-none"
+              loading="lazy" />
             <div class="p-2.5 space-y-1.5">
               <div class="flex flex-wrap gap-1">
-                {% if img.doc %}<span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-semibold bg-slate-800 text-slate-300 border border-slate-700">{{ img.doc }}</span>{% endif %}
-                {% if img.page %}<span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-semibold bg-slate-800 text-slate-300 border border-slate-700">p{{ img.page }}</span>{% endif %}
-                {% if img.score is not none %}<span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">{{ "%.3f"|format(img.score) }}</span>{% endif %}
+                {% if img.doc %}<span
+                  class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-semibold bg-slate-800 text-slate-300 border border-slate-700">{{
+                  img.doc }}</span>{% endif %}
+                {% if img.page %}<span
+                  class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-semibold bg-slate-800 text-slate-300 border border-slate-700">p{{
+                  img.page }}</span>{% endif %}
+                {% if img.score is not none %}<span
+                  class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">{{
+                  "%.3f"|format(img.score) }}</span>{% endif %}
               </div>
-              <p class="text-[11px] text-slate-400 overflow-hidden text-left" style="display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;">{{ img.caption }}</p>
+              <p class="text-[11px] text-slate-400 overflow-hidden text-left"
+                style="display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;">{{ img.caption }}</p>
             </div>
           </button>
           {% endfor %}
@@ -225,7 +243,8 @@
     <section class="bg-slate-900/60 rounded-2xl border border-slate-800 shadow-xl p-6">
       <h2 class="text-sm font-semibold text-slate-300 mb-4 flex items-center gap-2">
         <svg class="w-4.5 h-4.5 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+            d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
         </svg>
         Retrieved Text Chunks
       </h2>
@@ -233,9 +252,15 @@
         {% for t in texts %}
         <div class="border-b border-slate-800 pb-4 last:border-0 last:pb-0">
           <div class="flex flex-wrap gap-1.5 mb-2">
-            {% if t.doc %}<span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-semibold bg-slate-850 text-slate-400 border border-slate-800">{{ t.doc }}</span>{% endif %}
-            {% if t.page %}<span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-semibold bg-slate-850 text-slate-400 border border-slate-800">p{{ t.page }}</span>{% endif %}
-            {% if t.score is not none %}<span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">{{ "%.3f"|format(t.score) }}</span>{% endif %}
+            {% if t.doc %}<span
+              class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-semibold bg-slate-850 text-slate-400 border border-slate-800">{{
+              t.doc }}</span>{% endif %}
+            {% if t.page %}<span
+              class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-semibold bg-slate-850 text-slate-400 border border-slate-800">p{{
+              t.page }}</span>{% endif %}
+            {% if t.score is not none %}<span
+              class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">{{
+              "%.3f"|format(t.score) }}</span>{% endif %}
           </div>
           <p class="text-xs text-slate-400 leading-relaxed whitespace-pre-wrap select-all">{{ t.chunk_text }}</p>
         </div>
@@ -250,11 +275,18 @@
     <div class="absolute inset-0 bg-black/90 backdrop-blur-md" id="lightbox-backdrop"></div>
     <div class="absolute inset-0 flex items-center justify-center p-4">
       <div class="relative max-w-[95vw] max-h-[90vh] flex flex-col items-center">
-        <button type="button" id="lightbox-close" class="absolute -top-12 right-0 flex items-center justify-center w-10 h-10 rounded-full bg-slate-800 hover:bg-slate-700 text-white transition duration-200 z-10 border border-slate-700" aria-label="Close">
-          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+        <button type="button" id="lightbox-close"
+          class="absolute -top-12 right-0 flex items-center justify-center w-10 h-10 rounded-full bg-slate-800 hover:bg-slate-700 text-white transition duration-200 z-10 border border-slate-700"
+          aria-label="Close">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+          </svg>
         </button>
-        <img id="lightbox-img" src="" alt="" class="max-w-full max-h-[80vh] w-auto h-auto object-contain rounded-xl shadow-2xl border border-slate-800" />
-        <div id="lightbox-caption" class="mt-4 px-5 py-2.5 max-w-2xl rounded-xl bg-slate-900/95 border border-slate-800 text-slate-300 text-sm text-center shadow-lg"></div>
+        <img id="lightbox-img" src="" alt=""
+          class="max-w-full max-h-[80vh] w-auto h-auto object-contain rounded-xl shadow-2xl border border-slate-800" />
+        <div id="lightbox-caption"
+          class="mt-4 px-5 py-2.5 max-w-2xl rounded-xl bg-slate-900/95 border border-slate-800 text-slate-300 text-sm text-center shadow-lg">
+        </div>
       </div>
     </div>
   </div>
@@ -283,20 +315,20 @@
             if (btn) { btn.disabled = false; btn.classList.remove('opacity-50'); }
           });
       }
-      document.getElementById('btn-clean-cache')?.addEventListener('click', function () { 
+      document.getElementById('btn-clean-cache')?.addEventListener('click', function () {
         var manualId = document.getElementById('manual_id')?.value || '';
-        postAction('/api/clean-cache?manual_id=' + encodeURIComponent(manualId), this); 
+        postAction('/api/clean-cache?manual_id=' + encodeURIComponent(manualId), this);
       });
-      document.getElementById('btn-build-cache')?.addEventListener('click', function () { 
+      document.getElementById('btn-build-cache')?.addEventListener('click', function () {
         var manualId = document.getElementById('manual_id')?.value || '';
-        postAction('/api/build-cache?manual_id=' + encodeURIComponent(manualId), this); 
+        postAction('/api/build-cache?manual_id=' + encodeURIComponent(manualId), this);
       });
-      document.getElementById('btn-sync-s3')?.addEventListener('click', function () { 
+      document.getElementById('btn-sync-s3')?.addEventListener('click', function () {
         var manualId = document.getElementById('manual_id')?.value || '';
-        postAction('/api/sync-to-s3?manual_id=' + encodeURIComponent(manualId), this); 
+        postAction('/api/sync-to-s3?manual_id=' + encodeURIComponent(manualId), this);
       });
     })();
-    
+
     (function () {
       var lightbox = document.getElementById('image-lightbox');
       if (!lightbox) return;
@@ -337,4 +369,5 @@
     })();
   </script>
 </body>
+
 </html>
