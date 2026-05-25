@@ -615,6 +615,8 @@ def get_document_metadata(
     },
     add_sleep_after_page: bool = False,
     sleep_time_after_page: int = 2,
+    skip_image_for_pdfs: Optional[set] = None,
+    skip_pdfs_entirely: Optional[set] = None,
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """
     This function takes a PDF path, an image save directory, an image description prompt, an embedding size, and a text embedding text limit as input.
@@ -635,6 +637,12 @@ def get_document_metadata(
     text_metadata_df_final, image_metadata_df_final = pd.DataFrame(), pd.DataFrame()
 
     for pdf_path in glob.glob(pdf_folder_path + "/*.pdf"):
+        file_name = pdf_path.split("/")[-1]
+
+        if skip_pdfs_entirely and file_name in skip_pdfs_entirely:
+            print(f"[skip_existing_images] Skipping entire PDF (text+images already cached): {file_name}")
+            continue
+
         print(
             "\n\n",
             "Processing the file: ---------------------------------",
@@ -645,7 +653,9 @@ def get_document_metadata(
         doc, num_pages = get_pdf_doc_object(pdf_path)
         doc.close()  # close; each worker opens its own handle
 
-        file_name = pdf_path.split("/")[-1]
+        _skip_images = bool(skip_image_for_pdfs and file_name in skip_image_for_pdfs)
+        if _skip_images:
+            print(f"[skip_existing_images] Skipping image extraction for: {file_name}")
 
         text_metadata: Dict[Union[int, str], Dict] = {}
         image_metadata: Dict[Union[int, str], Dict] = {}
@@ -674,7 +684,7 @@ def get_document_metadata(
                 images = page.get_images()
                 _image_meta: Dict[int, Dict] = {}
 
-                for image_no, image in enumerate(images):
+                for image_no, image in enumerate(images) if not _skip_images else []:
                     image_number = int(image_no + 1)
                     image_for_gemini, image_name = get_image_for_gemini(
                         _doc, image, image_no, image_save_dir, file_name, page_num

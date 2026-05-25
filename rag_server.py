@@ -802,8 +802,13 @@ def api_clean_cache(manual_id: Optional[str] = None):
 
 
 @app.post("/api/build-cache")
-def api_build_cache(manual_id: Optional[str] = None):
-    """Force rebuild metadata for one manual from PDFs and sync cache + PDFs to S3."""
+def api_build_cache(manual_id: Optional[str] = None, skip_existing_images: bool = False):
+    """Force rebuild metadata for one manual from PDFs and sync cache + PDFs to S3.
+
+    skip_existing_images=true: skip image extraction for PDFs that already have
+    images in the cache (local or S3 URLs). Existing image rows are merged from
+    the previous cache and re-uploaded to S3 if still local.
+    """
     try:
         manual = _resolve_manual(manual_id)
     except RuntimeError as e:
@@ -821,6 +826,7 @@ def api_build_cache(manual_id: Optional[str] = None):
             generation_config=GenerationConfig(temperature=0.2),
             ocr_fallback=True,
             image_save_dir=manual.image_dir,
+            skip_existing_images=skip_existing_images,
         )
         n_imgs = _upload_images_to_s3_and_rewrite(rag_instance, manual)
         counts = _sync_to_s3(manual)

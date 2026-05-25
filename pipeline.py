@@ -406,6 +406,8 @@ class MultimodalRAGPipeline:
         safety_settings: Optional[Any] = None,
         # OCR control
         ocr_fallback: Optional[bool] = None,
+        # Skip image re-extraction for PDFs that already have images in cache
+        skip_existing_images: bool = False,
     ):
         """
         Same as before, but with OCR fallback appended into text_metadata_df.
@@ -423,6 +425,59 @@ class MultimodalRAGPipeline:
         )
         embedding_size = embedding_size or self.config.embedding_size
 
+        # Determine which PDFs to skip (image-only or entirely)
+        skip_image_for_pdfs: set = set()
+        skip_pdfs_entirely: set = set()
+        existing_image_df: Optional[pd.DataFrame] = None
+        existing_text_df: Optional[pd.DataFrame] = None
+
+        if skip_existing_images and cache_dir:
+            img_pkl = Path(cache_dir) / "image_metadata_df.pkl"
+            txt_pkl = Path(cache_dir) / "text_metadata_df.pkl"
+
+            if img_pkl.exists():
+                try:
+                    existing_image_df = pd.read_pickle(img_pkl)
+                    img_file_col = next(
+                        (c for c in ["file_name", "doc_name", "source"] if c in existing_image_df.columns),
+                        None,
+                    )
+                    if img_file_col:
+                        skip_image_for_pdfs = set(existing_image_df[img_file_col].dropna().unique().tolist())
+                except Exception as exc:
+                    print(f"[skip_existing_images] Could not load image cache: {exc}")
+
+            if txt_pkl.exists():
+                try:
+                    existing_text_df = pd.read_pickle(txt_pkl)
+                    txt_file_col = next(
+                        (c for c in ["file_name", "doc_name", "source"] if c in existing_text_df.columns),
+                        None,
+                    )
+                    if txt_file_col:
+                        cached_text_pdfs = set(existing_text_df[txt_file_col].dropna().unique().tolist())
+                        # Skip entirely when BOTH text and image rows exist for a PDF
+                        skip_pdfs_entirely = skip_image_for_pdfs & cached_text_pdfs
+                        skip_image_for_pdfs -= skip_pdfs_entirely
+                except Exception as exc:
+                    print(f"[skip_existing_images] Could not load text cache: {exc}")
+
+            if skip_pdfs_entirely:
+                print(f"[skip_existing_images] Skipping {len(skip_pdfs_entirely)} fully-cached PDF(s) (text+images)")
+            if skip_image_for_pdfs:
+                print(f"[skip_existing_images] Skipping image extraction only for {len(skip_image_for_pdfs)} PDF(s)")
+
+        elif skip_existing_images:
+            # No cache_dir: fallback to glob for existing image files
+            img_dir = Path(image_save_dir)
+            if img_dir.exists():
+                for pdf_path in self._pdf_paths(pdf_folder_path):
+                    fn = pdf_path.name
+                    if list(img_dir.glob(f"{fn}_image_*")):
+                        skip_image_for_pdfs.add(fn)
+                if skip_image_for_pdfs:
+                    print(f"[skip_existing_images] Found existing images for: {skip_image_for_pdfs}")
+
         kwargs: Dict[str, Any] = dict(
             image_save_dir=image_save_dir,
             image_description_prompt=image_description_prompt,
@@ -436,6 +491,10 @@ class MultimodalRAGPipeline:
             kwargs["generation_config"] = generation_config
         if safety_settings is not None:
             kwargs["safety_settings"] = safety_settings
+        if skip_image_for_pdfs:
+            kwargs["skip_image_for_pdfs"] = skip_image_for_pdfs
+        if skip_pdfs_entirely:
+            kwargs["skip_pdfs_entirely"] = skip_pdfs_entirely
 
         # 1) Original extraction (utils)
         text_df, image_df = get_document_metadata(
@@ -443,6 +502,42 @@ class MultimodalRAGPipeline:
             pdf_folder_path,
             **kwargs,
         )
+
+        # Merge existing rows for entirely-skipped PDFs
+        if skip_existing_images and skip_pdfs_entirely:
+            if existing_text_df is not None:
+                txt_file_col = next(
+                    (c for c in ["file_name", "doc_name", "source"] if c in existing_text_df.columns),
+                    None,
+                )
+                if txt_file_col:
+                    skipped_text = existing_text_df[existing_text_df[txt_file_col].isin(skip_pdfs_entirely)]
+                    if not skipped_text.empty:
+                        text_df = pd.concat([text_df, skipped_text], ignore_index=True)
+                        print(f"[skip_existing_images] Merged {len(skipped_text)} existing text row(s).")
+
+            if existing_image_df is not None:
+                img_file_col = next(
+                    (c for c in ["file_name", "doc_name", "source"] if c in existing_image_df.columns),
+                    None,
+                )
+                if img_file_col:
+                    skipped_imgs = existing_image_df[existing_image_df[img_file_col].isin(skip_pdfs_entirely)]
+                    if not skipped_imgs.empty:
+                        image_df = pd.concat([image_df, skipped_imgs], ignore_index=True)
+                        print(f"[skip_existing_images] Merged {len(skipped_imgs)} existing image row(s).")
+
+        # Merge existing image rows for image-only-skipped PDFs
+        elif skip_existing_images and existing_image_df is not None and skip_image_for_pdfs:
+            img_file_col = next(
+                (c for c in ["file_name", "doc_name", "source"] if c in existing_image_df.columns),
+                None,
+            )
+            if img_file_col:
+                skipped_imgs = existing_image_df[existing_image_df[img_file_col].isin(skip_image_for_pdfs)]
+                if not skipped_imgs.empty:
+                    image_df = pd.concat([image_df, skipped_imgs], ignore_index=True)
+                    print(f"[skip_existing_images] Merged {len(skipped_imgs)} existing image row(s).")
 
         # 2) OCR fallback: append OCR chunks + embeddings
         text_df = self._append_ocr_chunks(text_df, pdf_folder_path)
