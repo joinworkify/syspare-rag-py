@@ -46,3 +46,4 @@ manuals/
 
 # Internal docs (untracked)
 docs/internal/
+.claude

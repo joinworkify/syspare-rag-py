@@ -1,7 +1,35 @@
 import glob
 import os
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
+
+# Concurrent page workers during cache build. Tune with RAG_BUILD_WORKERS env var.
+# Keep ≤5 to stay within Vertex AI default QPM quotas.
+_BUILD_WORKERS = max(1, int(os.environ.get("RAG_BUILD_WORKERS", "4")))
+
+
+def _print_progress(prefix: str, current: int, total: int, start_time: float) -> None:
+    """Print a single-line overwriting progress bar with ETA."""
+    pct = current / total if total else 0
+    bar_width = 24
+    filled = int(bar_width * pct)
+    bar = "█" * filled + "░" * (bar_width - filled)
+    elapsed = time.time() - start_time
+    m_el, s_el = divmod(int(elapsed), 60)
+    eta_str = ""
+    if current > 0 and current < total:
+        rate = elapsed / current
+        remaining = rate * (total - current)
+        m_r, s_r = divmod(int(remaining), 60)
+        eta_str = f" | ETA ~{m_r}m {s_r:02d}s"
+    end = "\n" if current >= total else ""
+    print(
+        f"\r{prefix} [{bar}] {current}/{total} ({pct:.0%}) | {m_el}m {s_el:02d}s{eta_str}   ",
+        end=end,
+        flush=True,
+    )
 
 import cv2
 
@@ -307,7 +335,7 @@ def find_and_crop_blocks(
             crops.append(out_path)
             idx += 1
 
-    if delete_original and os.path.exists(page_img_path):
+    if crops and delete_original and os.path.exists(page_img_path):
         try:
             os.remove(page_img_path)
         except FileNotFoundError:
@@ -610,6 +638,8 @@ def get_document_metadata(
     },
     add_sleep_after_page: bool = False,
     sleep_time_after_page: int = 2,
+    skip_image_for_pdfs: Optional[set] = None,
+    skip_pdfs_entirely: Optional[set] = None,
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """
     This function takes a PDF path, an image save directory, an image description prompt, an embedding size, and a text embedding text limit as input.
@@ -630,6 +660,12 @@ def get_document_metadata(
     text_metadata_df_final, image_metadata_df_final = pd.DataFrame(), pd.DataFrame()
 
     for pdf_path in glob.glob(pdf_folder_path + "/*.pdf"):
+        file_name = pdf_path.split("/")[-1]
+
+        if skip_pdfs_entirely and file_name in skip_pdfs_entirely:
+            print(f"[skip_existing_images] Skipping entire PDF (text+images already cached): {file_name}")
+            continue
+
         print(
             "\n\n",
             "Processing the file: ---------------------------------",
@@ -638,85 +674,89 @@ def get_document_metadata(
         )
 
         doc, num_pages = get_pdf_doc_object(pdf_path)
+        doc.close()  # close; each worker opens its own handle
 
-        file_name = pdf_path.split("/")[-1]
+        _skip_images = bool(skip_image_for_pdfs and file_name in skip_image_for_pdfs)
+        if _skip_images:
+            print(f"[skip_existing_images] Skipping image extraction for: {file_name}")
 
         text_metadata: Dict[Union[int, str], Dict] = {}
         image_metadata: Dict[Union[int, str], Dict] = {}
 
-        for page_num in range(num_pages):
-            print(f"Processing page: {page_num + 1}")
+        _completed = 0
+        _prog_lock = threading.Lock()
+        _build_start = time.time()
+        print(f"\n[{file_name}] Starting extraction: {num_pages} pages | workers={_BUILD_WORKERS if not add_sleep_after_page else 1}")
 
-            page = doc[page_num]
+        def _process_page(page_num: int):
+            nonlocal _completed
+            import pymupdf as _fitz
+            _doc = _fitz.open(pdf_path)
+            try:
+                page = _doc[page_num]
 
-            text = page.get_text()
-            (
-                text,
-                page_text_embeddings_dict,
-                chunked_text_dict,
-                chunk_embeddings_dict,
-            ) = get_chunk_text_metadata(page, embedding_size=embedding_size)
+                (
+                    text,
+                    page_text_embeddings_dict,
+                    chunked_text_dict,
+                    chunk_embeddings_dict,
+                ) = get_chunk_text_metadata(page, embedding_size=embedding_size)
 
-            text_metadata[page_num] = {
-                "text": text,
-                "page_text_embeddings": page_text_embeddings_dict,
-                "chunked_text_dict": chunked_text_dict,
-                "chunk_embeddings_dict": chunk_embeddings_dict,
-            }
-
-            images = page.get_images()
-            image_metadata[page_num] = {}
-
-            for image_no, image in enumerate(images):
-                image_number = int(image_no + 1)
-                image_metadata[page_num][image_number] = {}
-
-                image_for_gemini, image_name = get_image_for_gemini(
-                    doc, image, image_no, image_save_dir, file_name, page_num
-                )
-
-                print(
-                    f"Extracting image from page: {page_num + 1}, saved as: {image_name}"
-                )
-
-                if image_for_gemini is None:
-                    continue
-
-                # Generate image description using Gemini
-                response = get_gemini_response(
-                    generative_multimodal_model,
-                    model_input=[image_description_prompt, image_for_gemini],
-                    generation_config=generation_config,
-                    safety_settings=safety_settings,
-                    stream=True,
-                )
-
-                image_embedding = get_image_embedding_from_multimodal_embedding_model(
-                    image_uri=image_name,
-                    embedding_size=embedding_size,
-                )
-
-                image_description_text_embedding = (
-                    get_text_embedding_from_text_embedding_model(text=response)
-                )
-
-                image_metadata[page_num][image_number] = {
-                    "img_num": image_number,
-                    "img_path": image_name,
-                    "img_desc": response,
-                    # "mm_embedding_from_text_desc_and_img": image_embedding_with_description,
-                    "mm_embedding_from_img_only": image_embedding,
-                    "text_embedding_from_image_description": image_description_text_embedding,
+                _text_meta = {
+                    "text": text,
+                    "page_text_embeddings": page_text_embeddings_dict,
+                    "chunked_text_dict": chunked_text_dict,
+                    "chunk_embeddings_dict": chunk_embeddings_dict,
                 }
 
-            # Add sleep to reduce issues with Quota error on API
-            if add_sleep_after_page:
-                time.sleep(sleep_time_after_page)
-                print(
-                    "Sleeping for ",
-                    sleep_time_after_page,
-                    """ sec before processing the next page to avoid quota issues. You can disable it: "add_sleep_after_page = False"  """,
-                )
+                images = page.get_images()
+                _image_meta: Dict[int, Dict] = {}
+
+                for image_no, image in enumerate(images) if not _skip_images else []:
+                    image_number = int(image_no + 1)
+                    image_for_gemini, image_name = get_image_for_gemini(
+                        _doc, image, image_no, image_save_dir, file_name, page_num
+                    )
+                    if image_for_gemini is None:
+                        continue
+
+                    response = get_gemini_response(
+                        generative_multimodal_model,
+                        model_input=[image_description_prompt, image_for_gemini],
+                        generation_config=generation_config,
+                        safety_settings=safety_settings,
+                        stream=True,
+                    )
+                    image_embedding = get_image_embedding_from_multimodal_embedding_model(
+                        image_uri=image_name,
+                        embedding_size=embedding_size,
+                    )
+                    image_description_text_embedding = (
+                        get_text_embedding_from_text_embedding_model(text=response)
+                    )
+                    _image_meta[image_number] = {
+                        "img_num": image_number,
+                        "img_path": image_name,
+                        "img_desc": response,
+                        "mm_embedding_from_img_only": image_embedding,
+                        "text_embedding_from_image_description": image_description_text_embedding,
+                    }
+
+                with _prog_lock:
+                    _completed += 1
+                    _print_progress(f"[{file_name}] Pages", _completed, num_pages, _build_start)
+
+                return page_num, _text_meta, _image_meta
+            finally:
+                _doc.close()
+
+        workers = _BUILD_WORKERS if not add_sleep_after_page else 1
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = [executor.submit(_process_page, pn) for pn in range(num_pages)]
+            for future in as_completed(futures):
+                pn, t_meta, i_meta = future.result()
+                text_metadata[pn] = t_meta
+                image_metadata[pn] = i_meta
 
         text_metadata_df = get_text_metadata_df(file_name, text_metadata)
         image_metadata_df = get_image_metadata_df(file_name, image_metadata)
@@ -897,6 +937,7 @@ def get_similar_image_from_query(
     image_emb: bool = True,
     top_n: int = 3,
     embedding_size: int = 128,
+    load_image_object: bool = False,
 ) -> Dict[int, Dict[str, Any]]:
     """
     Finds the top N most similar images from a metadata DataFrame based on a text query or an image query.
@@ -910,6 +951,7 @@ def get_similar_image_from_query(
         image_emb: Whether to use image embeddings (True) or text captions (False) for comparisons.
         top_n: The number of most similar images to return.
         embedding_size: The dimensionality of the image embeddings (only used if image_emb is True).
+        load_image_object: Whether to load/download the actual Image object bytes into memory (disabled by default for speed).
 
     Returns:
         A dictionary containing information about the top N most similar images, including cosine scores, image objects, paths, page numbers, text excerpts, and descriptions.
@@ -951,10 +993,18 @@ def get_similar_image_from_query(
             matched_imageno
         ]
 
-        # Load image from file
-        final_images[matched_imageno]["image_object"] = Image.load_from_file(
-            image_metadata_df.iloc[indexvalue]["img_path"]
-        )
+        # Load image optionally — handle both local paths and S3/HTTP URLs
+        _img_path = image_metadata_df.iloc[indexvalue]["img_path"]
+        if not load_image_object:
+            final_images[matched_imageno]["image_object"] = None
+        elif str(_img_path).startswith("http"):
+            final_images[matched_imageno]["image_object"] = Image.from_bytes(
+                requests.get(_img_path).content
+            )
+        else:
+            final_images[matched_imageno]["image_object"] = Image.load_from_file(
+                _img_path
+            )
 
         # Add file name
         final_images[matched_imageno]["file_name"] = image_metadata_df.iloc[indexvalue][

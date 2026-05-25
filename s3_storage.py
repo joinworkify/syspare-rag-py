@@ -40,8 +40,19 @@ def _get_client():
     )
 
 
-def sync_s3_to_local(bucket: str, s3_prefix: str, local_dir: str) -> int:
-    """Download all objects under s3_prefix into local_dir. Returns number of files downloaded."""
+def get_s3_public_url(key: str) -> str:
+    """Return the public HTTPS URL for an S3 object key."""
+    region = _env("AWS_DEFAULT_REGION", "us-east-2")
+    return f"https://{get_bucket_name()}.s3.{region}.amazonaws.com/{key}"
+
+
+def sync_s3_to_local(
+    bucket: str, s3_prefix: str, local_dir: str, *, skip_subdir: str = ""
+) -> int:
+    """Download all objects under s3_prefix into local_dir. Returns number of files downloaded.
+
+    skip_subdir: skip objects whose relative path starts with this subdir (e.g. "images").
+    """
     client = _get_client()
     local_path = Path(local_dir)
     local_path.mkdir(parents=True, exist_ok=True)
@@ -58,6 +69,8 @@ def sync_s3_to_local(bucket: str, s3_prefix: str, local_dir: str) -> int:
             rel = key[len(prefix) :].lstrip("/")
             if not rel:
                 continue
+            if skip_subdir and (rel == skip_subdir or rel.startswith(skip_subdir + "/")):
+                continue
             dest = local_path / rel
             dest.parent.mkdir(parents=True, exist_ok=True)
             print(f"[{idx+1}/{total_objects}] Downloading from S3: {key} -> {dest}")
@@ -66,8 +79,13 @@ def sync_s3_to_local(bucket: str, s3_prefix: str, local_dir: str) -> int:
     return count
 
 
-def sync_local_to_s3(local_dir: str, bucket: str, s3_prefix: str) -> int:
-    """Upload local_dir tree to s3_prefix. Returns number of files uploaded."""
+def sync_local_to_s3(
+    local_dir: str, bucket: str, s3_prefix: str, *, skip_subdir: str = ""
+) -> int:
+    """Upload local_dir tree to s3_prefix. Returns number of files uploaded.
+
+    skip_subdir: skip files whose relative path starts with this subdir (e.g. "images").
+    """
     client = _get_client()
     local_path = Path(local_dir)
     if not local_path.exists():
@@ -75,6 +93,8 @@ def sync_local_to_s3(local_dir: str, bucket: str, s3_prefix: str) -> int:
     prefix = f"{s3_prefix}/" if not s3_prefix.endswith("/") else s3_prefix
     count = 0
     files = [f for f in local_path.rglob("*") if f.is_file()]
+    if skip_subdir:
+        files = [f for f in files if f.relative_to(local_path).parts[0] != skip_subdir]
     total_files = len(files)
     for idx, f in enumerate(files):
         rel = f.relative_to(local_path)
@@ -152,21 +172,29 @@ def manual_pdf_s3_prefix(manual_id: str) -> str:
 
 
 def download_manual_cache_from_s3(manual_id: str, cache_dir: str) -> int:
-    """Download a manual's cache from S3 into cache_dir. Returns file count."""
+    """Download a manual's cache metadata (pkl/csv) from S3. Skips images/ — URLs are in the pkl."""
     if not is_s3_configured():
         return 0
     return sync_s3_to_local(
-        get_bucket_name(), manual_cache_s3_prefix(manual_id), cache_dir
+        get_bucket_name(), manual_cache_s3_prefix(manual_id), cache_dir, skip_subdir="images"
     )
 
 
 def upload_manual_cache_to_s3(manual_id: str, cache_dir: str) -> int:
-    """Upload manual's cache_dir to S3. Returns file count."""
+    """Upload manual's cache metadata (pkl/csv) to S3. Skips images/ — already uploaded individually."""
     if not is_s3_configured():
         return 0
     return sync_local_to_s3(
-        cache_dir, get_bucket_name(), manual_cache_s3_prefix(manual_id)
+        cache_dir, get_bucket_name(), manual_cache_s3_prefix(manual_id), skip_subdir="images"
     )
+
+
+def upload_image_to_s3(manual_id: str, local_path: str) -> str:
+    """Upload a single extracted image to S3 and return its public URL."""
+    path = Path(local_path)
+    key = f"{manual_cache_s3_prefix(manual_id)}/images/{path.name}"
+    _get_client().upload_file(str(path), get_bucket_name(), key)
+    return get_s3_public_url(key)
 
 
 def download_manual_pdfs_from_s3(manual_id: str, pdf_folder: str) -> int:

@@ -1,6 +1,8 @@
 # rag_server.py
 import os
 import shutil
+import threading
+import time
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -21,7 +23,7 @@ from syspare_rag.config import (
     ManualRegistry,
     load_manual_registry_from_env,
 )
-from utils import get_gemini_response
+from utils import get_gemini_response, _print_progress
 
 load_dotenv()
 
@@ -30,6 +32,7 @@ try:
         download_manual_cache_from_s3,
         download_manual_pdfs_from_s3,
         is_s3_configured,
+        upload_image_to_s3,
         upload_manual_cache_to_s3,
         upload_manual_pdf_file_to_s3,
         upload_manual_pdfs_to_s3,
@@ -38,6 +41,7 @@ except ImportError:
     is_s3_configured = lambda: False
     download_manual_cache_from_s3 = lambda *a, **k: 0
     download_manual_pdfs_from_s3 = lambda *a, **k: 0
+    upload_image_to_s3 = lambda *a, **k: a[1] if len(a) > 1 else ""
     upload_manual_cache_to_s3 = lambda *a, **k: 0
     upload_manual_pdfs_to_s3 = lambda *a, **k: 0
     upload_manual_pdf_file_to_s3 = lambda *a, **k: False
@@ -109,6 +113,15 @@ app.mount("/static", StaticFiles(directory=DEFAULT_MANUAL.image_dir), name="stat
 # -----------------------------
 _pipelines: Dict[str, MultimodalRAGPipeline] = {}
 _pipeline_errors: Dict[str, str] = {}
+_pipeline_locks: Dict[str, threading.Lock] = {}
+_pipeline_locks_lock = threading.Lock()
+
+
+def _get_pipeline_lock(manual_id: str) -> threading.Lock:
+    with _pipeline_locks_lock:
+        if manual_id not in _pipeline_locks:
+            _pipeline_locks[manual_id] = threading.Lock()
+        return _pipeline_locks[manual_id]
 
 
 def _resolve_manual(manual_id: Optional[str]) -> ManualConfig:
@@ -165,6 +178,7 @@ def _clear_rag_state(manual_id: Optional[str] = None) -> None:
 def _remap_image_paths(rag: MultimodalRAGPipeline, manual: ManualConfig) -> None:
     """Rewrite cached image_metadata_df.img_path to current image_dir.
 
+    Skips rows that already hold S3 URLs (starts with http).
     Caches built in earlier layouts (e.g. ./cache/images/...) store stale paths.
     We rebase them to manual.image_dir/<basename or relative subpath> so image
     retrieval and URL building work after the per-manual restructure.
@@ -176,6 +190,8 @@ def _remap_image_paths(rag: MultimodalRAGPipeline, manual: ManualConfig) -> None
 
     def _rebase(value):
         if not value:
+            return value
+        if str(value).startswith("http"):
             return value
         original = Path(str(value))
         # If already pointing at a real file under image_dir, keep it.
@@ -189,6 +205,46 @@ def _remap_image_paths(rag: MultimodalRAGPipeline, manual: ManualConfig) -> None
         return str(fallback) if fallback.exists() else str(candidate)
 
     df["img_path"] = df["img_path"].map(_rebase)
+
+
+def _upload_images_to_s3_and_rewrite(
+    rag: MultimodalRAGPipeline, manual: ManualConfig
+) -> int:
+    """Upload each extracted image to S3, rewrite img_path to public URL, re-save cache.
+
+    This runs after build_metadata() so local files exist, but before sync_to_s3()
+    so the bulk cache upload skips the images/ subdir.
+    Returns number of images uploaded.
+    """
+    if not is_s3_configured():
+        return 0
+    df = rag.image_metadata_df
+    if df is None or "img_path" not in df.columns:
+        return 0
+
+    total = int((df["img_path"].notna() & ~df["img_path"].astype(str).str.startswith("http")).sum())
+    if total == 0:
+        return 0
+    count = 0
+    _upload_start = time.time()
+    print(f"\n[{manual.manual_id}] Uploading {total} image(s) to S3...")
+
+    def _upload(value):
+        nonlocal count
+        if not value or str(value).startswith("http"):
+            return value
+        try:
+            url = upload_image_to_s3(manual.manual_id, str(value))
+            count += 1
+            _print_progress(f"[{manual.manual_id}] S3 upload", count, total, _upload_start)
+            return url
+        except Exception as exc:
+            print(f"\nWarning: failed to upload image {value} to S3: {exc}")
+            return value
+
+    df["img_path"] = df["img_path"].map(_upload)
+    rag.save_cache(manual.cache_dir)
+    return count
 
 
 def _build_rag_config(manual: ManualConfig) -> RagConfig:
@@ -211,6 +267,7 @@ def _get_rag(manual_id: Optional[str] = None) -> MultimodalRAGPipeline:
     manual = _resolve_manual(manual_id)
     mid = manual.manual_id
 
+    # Fast path: already loaded
     cached = _pipelines.get(mid)
     if cached is not None:
         return cached
@@ -219,30 +276,42 @@ def _get_rag(manual_id: Optional[str] = None) -> MultimodalRAGPipeline:
     if err:
         raise RuntimeError(err)
 
-    try:
-        _sync_from_s3(manual)
-        cfg = _build_rag_config(manual)
-        rag_instance = MultimodalRAGPipeline(cfg)
-        # Try to load cache first; if missing, build from PDFs.
-        if not rag_instance.load_cache(manual.cache_dir, rebuild_image_objects=False):
-            print(f"[{mid}] Metadata cache not found. Building metadata...")
-            rag_instance.build_metadata(
-                pdf_folder_path=manual.pdf_folder,
-                cache_dir=manual.cache_dir,
-                force_rebuild=False,
-                generation_config=GenerationConfig(temperature=0.2),
-                ocr_fallback=True,
-                image_save_dir=manual.image_dir,
-            )
-            _sync_to_s3(manual)
-        else:
-            print(f"[{mid}] Metadata cache loaded from disk.")
-        _remap_image_paths(rag_instance, manual)
-        _pipelines[mid] = rag_instance
-        return rag_instance
-    except Exception as e:
-        _pipeline_errors[mid] = str(e)
-        raise RuntimeError(str(e))
+    # Slow path: acquire per-manual lock so concurrent requests don't each
+    # trigger a full S3 sync + cache load simultaneously.
+    with _get_pipeline_lock(mid):
+        # Re-check after acquiring lock (another thread may have loaded it)
+        cached = _pipelines.get(mid)
+        if cached is not None:
+            return cached
+        err = _pipeline_errors.get(mid)
+        if err:
+            raise RuntimeError(err)
+
+        try:
+            _sync_from_s3(manual)
+            cfg = _build_rag_config(manual)
+            rag_instance = MultimodalRAGPipeline(cfg)
+            # Try to load cache first; if missing, build from PDFs.
+            if not rag_instance.load_cache(manual.cache_dir, rebuild_image_objects=False):
+                print(f"[{mid}] Metadata cache not found. Building metadata...")
+                rag_instance.build_metadata(
+                    pdf_folder_path=manual.pdf_folder,
+                    cache_dir=manual.cache_dir,
+                    force_rebuild=False,
+                    generation_config=GenerationConfig(temperature=0.2),
+                    ocr_fallback=True,
+                    image_save_dir=manual.image_dir,
+                )
+                _upload_images_to_s3_and_rewrite(rag_instance, manual)
+                _sync_to_s3(manual)
+            else:
+                print(f"[{mid}] Metadata cache loaded from disk.")
+            _remap_image_paths(rag_instance, manual)
+            _pipelines[mid] = rag_instance
+            return rag_instance
+        except Exception as e:
+            _pipeline_errors[mid] = str(e)
+            raise RuntimeError(str(e))
 
 
 @app.on_event("startup")
@@ -264,9 +333,12 @@ def _safe_image_url(img_path: str, manual_id: Optional[str] = None) -> str:
     """
     Convert an absolute/relative img_path to a URL under /static/<manual_id>/...
 
+    If img_path is already an S3/HTTP URL, return it directly.
     Handles caches built in older layouts by falling back to basename lookup
     inside the manual's image dir.
     """
+    if img_path.startswith("http"):
+        return img_path
     manual = _resolve_manual(manual_id)
     p = Path(img_path)
     root = Path(manual.image_dir).resolve()
@@ -734,8 +806,13 @@ def api_clean_cache(manual_id: Optional[str] = None):
 
 
 @app.post("/api/build-cache")
-def api_build_cache(manual_id: Optional[str] = None):
-    """Force rebuild metadata for one manual from PDFs and sync cache + PDFs to S3."""
+def api_build_cache(manual_id: Optional[str] = None, skip_existing_images: bool = False):
+    """Force rebuild metadata for one manual from PDFs and sync cache + PDFs to S3.
+
+    skip_existing_images=true: skip image extraction for PDFs that already have
+    images in the cache (local or S3 URLs). Existing image rows are merged from
+    the previous cache and re-uploaded to S3 if still local.
+    """
     try:
         manual = _resolve_manual(manual_id)
     except RuntimeError as e:
@@ -753,8 +830,11 @@ def api_build_cache(manual_id: Optional[str] = None):
             generation_config=GenerationConfig(temperature=0.2),
             ocr_fallback=True,
             image_save_dir=manual.image_dir,
+            skip_existing_images=skip_existing_images,
         )
+        n_imgs = _upload_images_to_s3_and_rewrite(rag_instance, manual)
         counts = _sync_to_s3(manual)
+        counts["images_to_s3"] = n_imgs
         _remap_image_paths(rag_instance, manual)
         _pipelines[manual.manual_id] = rag_instance
         return JSONResponse(
@@ -793,6 +873,30 @@ def api_sync_to_s3(manual_id: Optional[str] = None):
             "message": f"Uploaded {counts['cache']} cache file(s), "
             f"{counts['pdfs']} PDF(s) to S3 for {manual.manual_id}.",
             "uploaded": counts,
+        }
+    )
+
+
+@app.post("/api/pull-from-s3")
+def api_pull_from_s3(manual_id: Optional[str] = None):
+    """Download one manual's cache and PDFs from S3 into local dirs."""
+    try:
+        manual = _resolve_manual(manual_id)
+    except RuntimeError as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+
+    if not is_s3_configured():
+        return JSONResponse(
+            {"ok": False, "error": "S3 not configured. Set AWS_* and S3_BUCKET_NAME."},
+            status_code=400,
+        )
+    _sync_from_s3(manual)
+    _clear_rag_state(manual.manual_id)
+    return JSONResponse(
+        {
+            "ok": True,
+            "manual_id": manual.manual_id,
+            "message": f"Pulled cache and PDFs from S3 for {manual.manual_id}. RAG state cleared.",
         }
     )
 
