@@ -2,6 +2,7 @@
 import os
 import shutil
 import threading
+import time
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -22,7 +23,7 @@ from syspare_rag.config import (
     ManualRegistry,
     load_manual_registry_from_env,
 )
-from utils import get_gemini_response
+from utils import get_gemini_response, _print_progress
 
 load_dotenv()
 
@@ -222,8 +223,11 @@ def _upload_images_to_s3_and_rewrite(
         return 0
 
     total = int((df["img_path"].notna() & ~df["img_path"].astype(str).str.startswith("http")).sum())
+    if total == 0:
+        return 0
     count = 0
-    print(f"[{manual.manual_id}] Uploading {total} image(s) to S3...")
+    _upload_start = time.time()
+    print(f"\n[{manual.manual_id}] Uploading {total} image(s) to S3...")
 
     def _upload(value):
         nonlocal count
@@ -232,10 +236,10 @@ def _upload_images_to_s3_and_rewrite(
         try:
             url = upload_image_to_s3(manual.manual_id, str(value))
             count += 1
-            print(f"[{manual.manual_id}] S3 image upload [{count}/{total}]: {Path(str(value)).name}")
+            _print_progress(f"[{manual.manual_id}] S3 upload", count, total, _upload_start)
             return url
         except Exception as exc:
-            print(f"Warning: failed to upload image {value} to S3: {exc}")
+            print(f"\nWarning: failed to upload image {value} to S3: {exc}")
             return value
 
     df["img_path"] = df["img_path"].map(_upload)
@@ -802,8 +806,13 @@ def api_clean_cache(manual_id: Optional[str] = None):
 
 
 @app.post("/api/build-cache")
-def api_build_cache(manual_id: Optional[str] = None):
-    """Force rebuild metadata for one manual from PDFs and sync cache + PDFs to S3."""
+def api_build_cache(manual_id: Optional[str] = None, skip_existing_images: bool = False):
+    """Force rebuild metadata for one manual from PDFs and sync cache + PDFs to S3.
+
+    skip_existing_images=true: skip image extraction for PDFs that already have
+    images in the cache (local or S3 URLs). Existing image rows are merged from
+    the previous cache and re-uploaded to S3 if still local.
+    """
     try:
         manual = _resolve_manual(manual_id)
     except RuntimeError as e:
@@ -821,6 +830,7 @@ def api_build_cache(manual_id: Optional[str] = None):
             generation_config=GenerationConfig(temperature=0.2),
             ocr_fallback=True,
             image_save_dir=manual.image_dir,
+            skip_existing_images=skip_existing_images,
         )
         n_imgs = _upload_images_to_s3_and_rewrite(rag_instance, manual)
         counts = _sync_to_s3(manual)
