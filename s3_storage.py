@@ -49,7 +49,9 @@ def sync_s3_to_local(bucket: str, s3_prefix: str, local_dir: str) -> int:
     count = 0
     paginator = client.get_paginator("list_objects_v2")
     for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
-        for obj in page.get("Contents") or []:
+        contents = page.get("Contents") or []
+        total_objects = len(contents)
+        for idx, obj in enumerate(contents):
             key = obj["Key"]
             if key.endswith("/"):
                 continue
@@ -58,6 +60,7 @@ def sync_s3_to_local(bucket: str, s3_prefix: str, local_dir: str) -> int:
                 continue
             dest = local_path / rel
             dest.parent.mkdir(parents=True, exist_ok=True)
+            print(f"[{idx+1}/{total_objects}] Downloading from S3: {key} -> {dest}")
             client.download_file(bucket, key, str(dest))
             count += 1
     return count
@@ -71,12 +74,14 @@ def sync_local_to_s3(local_dir: str, bucket: str, s3_prefix: str) -> int:
         return 0
     prefix = f"{s3_prefix}/" if not s3_prefix.endswith("/") else s3_prefix
     count = 0
-    for f in local_path.rglob("*"):
-        if f.is_file():
-            rel = f.relative_to(local_path)
-            key = prefix + str(rel).replace("\\", "/")
-            client.upload_file(str(f), bucket, key)
-            count += 1
+    files = [f for f in local_path.rglob("*") if f.is_file()]
+    total_files = len(files)
+    for idx, f in enumerate(files):
+        rel = f.relative_to(local_path)
+        key = prefix + str(rel).replace("\\", "/")
+        print(f"[{idx+1}/{total_files}] Uploading to S3: {f} -> {key}")
+        client.upload_file(str(f), bucket, key)
+        count += 1
     return count
 
 
