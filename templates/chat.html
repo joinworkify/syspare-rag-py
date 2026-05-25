@@ -1,60 +1,75 @@
 <!DOCTYPE html>
 <html lang="en" class="h-full">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Yanmar Tractor Interactive Service Assistant</title>
     <!-- Tailwind CSS v4 via CDN -->
     <script src="https://cdn.tailwindcss.com"></script>
-    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono&display=swap" rel="stylesheet">
+    <link
+        href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono&display=swap"
+        rel="stylesheet">
     <style>
         body {
             font-family: 'Outfit', sans-serif;
-            background-color: #020617; /* slate-950 */
+            background-color: #020617;
+            /* slate-950 */
         }
+
         .code-font {
             font-family: 'JetBrains Mono', monospace;
         }
+
         .glass-panel {
             background: rgba(15, 23, 42, 0.45);
             backdrop-filter: blur(20px);
             -webkit-backdrop-filter: blur(20px);
             border: 1px solid rgba(255, 255, 255, 0.08);
         }
+
         .glass-card {
             background: rgba(30, 41, 59, 0.35);
             border: 1px solid rgba(255, 255, 255, 0.05);
             transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
         }
+
         .glass-card:hover {
             border-color: rgba(16, 185, 129, 0.3);
             background: rgba(16, 185, 129, 0.02);
             transform: translateY(-1px);
         }
+
         /* Custom scrollbar for slate theme */
         ::-webkit-scrollbar {
             width: 6px;
             height: 6px;
         }
+
         ::-webkit-scrollbar-track {
             background: #020617;
         }
+
         ::-webkit-scrollbar-thumb {
             background: #1e293b;
             border-radius: 9999px;
         }
+
         ::-webkit-scrollbar-thumb:hover {
             background: #334155;
         }
     </style>
 </head>
+
 <body class="h-full text-slate-200 flex overflow-hidden">
 
     <!-- Collapsible Sidebar (Imitates vercel-ai-chatbot) -->
-    <aside id="sidebar" class="w-80 bg-slate-950/90 border-r border-slate-900 flex flex-col h-full shrink-0 transition-all duration-300 relative z-20">
+    <aside id="sidebar"
+        class="w-80 bg-slate-950/90 border-r border-slate-900 flex flex-col h-full shrink-0 transition-all duration-300 relative z-20">
         <!-- Sidebar Header -->
         <div class="p-4 border-b border-slate-900 flex justify-between items-center">
-            <button onclick="startNewChat()" class="flex-1 flex items-center justify-center gap-2 py-2 px-4 rounded-xl bg-emerald-950/40 border border-emerald-500/25 hover:border-emerald-500/55 hover:bg-emerald-950/60 text-emerald-400 text-sm font-semibold transition">
+            <button onclick="startNewChat()"
+                class="flex-1 flex items-center justify-center gap-2 py-2 px-4 rounded-xl bg-emerald-950/40 border border-emerald-500/25 hover:border-emerald-500/55 hover:bg-emerald-950/60 text-emerald-400 text-sm font-semibold transition">
                 <span>➕</span> New Chat
             </button>
         </div>
@@ -70,7 +85,8 @@
 
         <!-- Sidebar Footer -->
         <div class="p-4 border-t border-slate-900 space-y-2">
-            <button onclick="clearAllLogs()" class="w-full py-2 px-4 rounded-lg bg-slate-900 hover:bg-red-950/20 border border-slate-800 hover:border-red-900/30 text-slate-400 hover:text-red-400 text-xs font-medium transition flex items-center justify-center gap-2">
+            <button onclick="clearAllLogs()"
+                class="w-full py-2 px-4 rounded-lg bg-slate-900 hover:bg-red-950/20 border border-slate-800 hover:border-red-900/30 text-slate-400 hover:text-red-400 text-xs font-medium transition flex items-center justify-center gap-2">
                 <span>🗑️</span> Clear Logs
             </button>
             <div class="text-[10px] text-slate-600 text-center font-mono uppercase tracking-wider">
@@ -81,59 +97,80 @@
 
     <!-- Main Workspace Area -->
     <div class="flex-1 flex overflow-hidden relative h-full">
-        
+
         <!-- Toggle Sidebar Floating Button -->
-        <button onclick="toggleSidebar()" class="absolute left-4 top-4 z-30 p-2 rounded-xl bg-slate-900/80 border border-slate-800 hover:border-emerald-500/40 text-slate-400 hover:text-emerald-400 transition" title="Toggle Sidebar">
+        <button onclick="toggleSidebar()"
+            class="absolute left-4 top-4 z-30 p-2 rounded-xl bg-slate-900/80 border border-slate-800 hover:border-emerald-500/40 text-slate-400 hover:text-emerald-400 transition"
+            title="Toggle Sidebar">
             <span>📂</span>
         </button>
 
         <!-- Center: Interactive Chat Interface -->
         <section class="flex-1 flex flex-col h-full justify-between bg-slate-950 relative">
             <!-- Neon background glows -->
-            <div class="absolute top-[-10%] left-[20%] w-[500px] h-[500px] bg-emerald-500/5 rounded-full blur-[150px] pointer-events-none"></div>
-            <div class="absolute bottom-[-10%] right-[10%] w-[400px] h-[400px] bg-emerald-500/3 rounded-full blur-[120px] pointer-events-none"></div>
+            <div
+                class="absolute top-[-10%] left-[20%] w-[500px] h-[500px] bg-emerald-500/5 rounded-full blur-[150px] pointer-events-none">
+            </div>
+            <div
+                class="absolute bottom-[-10%] right-[10%] w-[400px] h-[400px] bg-emerald-500/3 rounded-full blur-[120px] pointer-events-none">
+            </div>
 
             <!-- Chat Scroll Area -->
             <div id="chat-scroller" class="flex-1 overflow-y-auto p-6 space-y-6 scroll-smooth pt-20">
-                
+
                 <!-- Initial Landing State (Imitates vercel-ai-chatbot template welcome) -->
                 <div id="landing-welcome" class="max-w-2xl mx-auto py-12 text-center space-y-8">
                     <div class="space-y-3">
-                        <div class="inline-flex p-3 rounded-2xl bg-emerald-950/40 border border-emerald-500/20 text-3xl text-emerald-400 animate-pulse">
+                        <div
+                            class="inline-flex p-3 rounded-2xl bg-emerald-950/40 border border-emerald-500/20 text-3xl text-emerald-400 animate-pulse">
                             🔧
                         </div>
-                        <h2 class="text-3xl font-extrabold tracking-tight bg-gradient-to-r from-emerald-400 via-teal-200 to-emerald-300 bg-clip-text text-transparent">
+                        <h2
+                            class="text-3xl font-extrabold tracking-tight bg-gradient-to-r from-emerald-400 via-teal-200 to-emerald-300 bg-clip-text text-transparent">
                             Yanmar Tractor Service Assistant
                         </h2>
                         <p class="text-slate-400 max-w-md mx-auto text-sm leading-relaxed">
-                            A multi-turn conversational advisor trained on Yanmar service manuals. Describe your issue or symptom below.
+                            A multi-turn conversational advisor trained on Yanmar service manuals. Describe your issue
+                            or symptom below.
                         </p>
                     </div>
 
                     <!-- Suggestion Prompt Cards -->
                     <div class="grid grid-cols-1 md:grid-cols-2 gap-3 max-w-lg mx-auto">
-                        <button onclick="triggerQuickPrompt('How to change the engine oil')" class="p-4 rounded-xl text-left glass-card transition relative group">
-                            <span class="absolute right-4 top-4 text-emerald-500 opacity-0 group-hover:opacity-100 transition-opacity">⚡</span>
+                        <button onclick="triggerQuickPrompt('How to change the engine oil')"
+                            class="p-4 rounded-xl text-left glass-card transition relative group">
+                            <span
+                                class="absolute right-4 top-4 text-emerald-500 opacity-0 group-hover:opacity-100 transition-opacity">⚡</span>
                             <h4 class="text-sm font-semibold text-emerald-400 mb-1">Engine Oil Change</h4>
-                            <p class="text-xs text-slate-400">Step-by-step instructions on checking and changing the lubricant filter.</p>
+                            <p class="text-xs text-slate-400">Step-by-step instructions on checking and changing the
+                                lubricant filter.</p>
                         </button>
 
-                        <button onclick="triggerQuickPrompt('What should we do front axle is leaking oil')" class="p-4 rounded-xl text-left glass-card transition relative group">
-                            <span class="absolute right-4 top-4 text-emerald-500 opacity-0 group-hover:opacity-100 transition-opacity">⚡</span>
+                        <button onclick="triggerQuickPrompt('What should we do front axle is leaking oil')"
+                            class="p-4 rounded-xl text-left glass-card transition relative group">
+                            <span
+                                class="absolute right-4 top-4 text-emerald-500 opacity-0 group-hover:opacity-100 transition-opacity">⚡</span>
                             <h4 class="text-sm font-semibold text-emerald-400 mb-1">Axle Oil Leak</h4>
-                            <p class="text-xs text-slate-400">Diagnostic procedure for inspecting seal and front wheel drive components.</p>
+                            <p class="text-xs text-slate-400">Diagnostic procedure for inspecting seal and front wheel
+                                drive components.</p>
                         </button>
 
-                        <button onclick="triggerQuickPrompt('How to replace the clutch')" class="p-4 rounded-xl text-left glass-card transition relative group">
-                            <span class="absolute right-4 top-4 text-emerald-500 opacity-0 group-hover:opacity-100 transition-opacity">⚡</span>
+                        <button onclick="triggerQuickPrompt('How to replace the clutch')"
+                            class="p-4 rounded-xl text-left glass-card transition relative group">
+                            <span
+                                class="absolute right-4 top-4 text-emerald-500 opacity-0 group-hover:opacity-100 transition-opacity">⚡</span>
                             <h4 class="text-sm font-semibold text-emerald-400 mb-1">Clutch Replacement</h4>
-                            <p class="text-xs text-slate-400">Manual instructions for replacing and servicing the clutch disk linkage.</p>
+                            <p class="text-xs text-slate-400">Manual instructions for replacing and servicing the clutch
+                                disk linkage.</p>
                         </button>
 
-                        <button onclick="triggerQuickPrompt('What should we do if we cannot wake up our y35a tractor?')" class="p-4 rounded-xl text-left glass-card transition relative group">
-                            <span class="absolute right-4 top-4 text-emerald-500 opacity-0 group-hover:opacity-100 transition-opacity">⚡</span>
+                        <button onclick="triggerQuickPrompt('What should we do if we cannot wake up our y35a tractor?')"
+                            class="p-4 rounded-xl text-left glass-card transition relative group">
+                            <span
+                                class="absolute right-4 top-4 text-emerald-500 opacity-0 group-hover:opacity-100 transition-opacity">⚡</span>
                             <h4 class="text-sm font-semibold text-emerald-400 mb-1">Starter & Wake Up Issues</h4>
-                            <p class="text-xs text-slate-400">Troubleshooting steps if your electrical system fails to start or wake up.</p>
+                            <p class="text-xs text-slate-400">Troubleshooting steps if your electrical system fails to
+                                start or wake up.</p>
                         </button>
                     </div>
                 </div>
@@ -147,14 +184,19 @@
             <!-- Sticky Chat Input Panel -->
             <div class="p-6 border-t border-slate-900 bg-slate-950/80 backdrop-blur">
                 <div class="max-w-3xl mx-auto relative">
-                    <form id="chat-form" class="relative rounded-2xl bg-slate-900 border border-slate-800 focus-within:border-emerald-500/50 focus-within:ring-2 focus-within:ring-emerald-500/10 transition duration-300">
-                        <textarea id="chat-input" required rows="1" placeholder="Ask your tractor question..." 
-                                  class="w-full pr-16 pl-4 py-4 rounded-2xl bg-transparent text-slate-100 placeholder-slate-500 focus:outline-none resize-none overflow-y-hidden text-sm leading-relaxed max-h-36"></textarea>
-                        
+                    <form id="chat-form"
+                        class="relative rounded-2xl bg-slate-900 border border-slate-800 focus-within:border-emerald-500/50 focus-within:ring-2 focus-within:ring-emerald-500/10 transition duration-300">
+                        <textarea id="chat-input" required rows="1" placeholder="Ask your tractor question..."
+                            class="w-full pr-16 pl-4 py-4 rounded-2xl bg-transparent text-slate-100 placeholder-slate-500 focus:outline-none resize-none overflow-y-hidden text-sm leading-relaxed max-h-36"></textarea>
+
                         <div class="absolute right-3 bottom-3">
-                            <button type="submit" class="p-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-medium transition duration-200 disabled:opacity-50 disabled:hover:bg-emerald-600 flex items-center justify-center" id="submit-btn">
-                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M14 5l7 7m0 0l-7 7m7-7H3"></path>
+                            <button type="submit"
+                                class="p-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-medium transition duration-200 disabled:opacity-50 disabled:hover:bg-emerald-600 flex items-center justify-center"
+                                id="submit-btn">
+                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"
+                                    xmlns="http://www.w3.org/2000/svg">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"
+                                        d="M14 5l7 7m0 0l-7 7m7-7H3"></path>
                                 </svg>
                             </button>
                         </div>
@@ -171,11 +213,13 @@
         </section>
 
         <!-- Right Panel: Collapsible Context & Retrieval Metadata -->
-        <section id="resource-panel" class="w-80 border-l border-slate-900 bg-slate-950/50 flex flex-col h-full transition-all duration-300 overflow-hidden shrink-0">
+        <section id="resource-panel"
+            class="w-80 border-l border-slate-900 bg-slate-950/50 flex flex-col h-full transition-all duration-300 overflow-hidden shrink-0">
             <!-- Panel Header -->
             <div class="p-4 border-b border-slate-900 flex justify-between items-center">
                 <h3 class="text-xs font-semibold text-slate-400 uppercase tracking-wider">RAG References</h3>
-                <span class="text-[10px] bg-slate-800 text-emerald-400 font-bold px-2 py-0.5 rounded-full" id="total-matches-badge">0 matches</span>
+                <span class="text-[10px] bg-slate-800 text-emerald-400 font-bold px-2 py-0.5 rounded-full"
+                    id="total-matches-badge">0 matches</span>
             </div>
 
             <!-- Panel Contents -->
@@ -184,7 +228,8 @@
                 <div>
                     <h4 class="text-xs font-medium text-slate-500 mb-3 uppercase tracking-widest">Manual Clips</h4>
                     <div id="references-container" class="space-y-3">
-                        <div class="text-xs text-slate-600 italic py-2">Retrieved manual pages will appear here during active chat...</div>
+                        <div class="text-xs text-slate-600 italic py-2">Retrieved manual pages will appear here during
+                            active chat...</div>
                     </div>
                 </div>
 
@@ -192,7 +237,8 @@
                 <div>
                     <h4 class="text-xs font-medium text-slate-500 mb-3 uppercase tracking-widest">Diagrams & Photos</h4>
                     <div id="diagrams-container" class="grid grid-cols-1 gap-2">
-                        <div class="text-xs text-slate-600 italic py-2">Retrieved diagram matching will show here...</div>
+                        <div class="text-xs text-slate-600 italic py-2">Retrieved diagram matching will show here...
+                        </div>
                     </div>
                 </div>
             </div>
@@ -213,7 +259,7 @@
         const landingWelcome = document.getElementById('landing-welcome');
         const messagesContainer = document.getElementById('messages-container');
         const chatScroller = document.getElementById('chat-scroller');
-        
+
         const referencesContainer = document.getElementById('references-container');
         const diagramsContainer = document.getElementById('diagrams-container');
         const totalMatchesBadge = document.getElementById('total-matches-badge');
@@ -226,11 +272,11 @@
                 try {
                     savedSessions = JSON.parse(saved);
                     renderSessionList();
-                } catch(e) {
+                } catch (e) {
                     savedSessions = {};
                 }
             }
-            
+
             // Adjust textarea height automatically
             chatInput.addEventListener('input', () => {
                 chatInput.style.height = 'auto';
@@ -269,7 +315,7 @@
 
             // Append User Question to View
             appendMessage('user', query);
-            
+
             // Clean input field
             chatInput.value = '';
             chatInput.style.height = 'auto';
@@ -290,14 +336,14 @@
                 });
 
                 const data = await response.json();
-                
+
                 // Clear the loading indicator
                 const loadingBubble = document.getElementById(loadingBubbleId);
                 if (loadingBubble) loadingBubble.remove();
 
                 // Append assistant's answer
                 appendMessage('assistant', data.answer);
-                
+
                 // Save context history
                 chatHistory = data.history;
 
@@ -320,7 +366,7 @@
         function renderRAGContext(texts, images) {
             referencesContainer.innerHTML = '';
             diagramsContainer.innerHTML = '';
-            
+
             const totalMatches = texts.length + images.length;
             totalMatchesBadge.innerText = `${totalMatches} matches`;
 
@@ -332,7 +378,7 @@
                     card.className = 'p-3 rounded-xl bg-slate-900 border border-slate-800/80 hover:border-emerald-500/20 text-xs transition duration-200';
                     card.innerHTML = `
                         <div class="flex justify-between items-center text-slate-400 mb-2 font-mono text-[10px]">
-                            <span class="text-emerald-400 font-semibold uppercase">Clip #${idx+1}</span>
+                            <span class="text-emerald-400 font-semibold uppercase">Clip #${idx + 1}</span>
                             <span>PAGE ${t.page || 'N/A'}</span>
                         </div>
                         <p class="text-slate-300 leading-relaxed font-sans">${t.chunk_text.slice(0, 200)}...</p>
@@ -351,7 +397,7 @@
                     card.innerHTML = `
                         <img src="${img.img_url}" alt="Diagram" class="w-full h-36 object-cover border-b border-slate-800 bg-black">
                         <div class="p-3">
-                            <span class="text-[10px] bg-slate-800 text-emerald-400 font-bold px-2 py-0.5 rounded-full uppercase">Figure #${idx+1}</span>
+                            <span class="text-[10px] bg-slate-800 text-emerald-400 font-bold px-2 py-0.5 rounded-full uppercase">Figure #${idx + 1}</span>
                             <p class="text-xs text-slate-300 mt-2 leading-relaxed">${img.caption || 'Operational Diagram'}</p>
                             <div class="mt-2 text-[9px] text-slate-500 font-mono">Page ${img.page} | ${img.doc}</div>
                         </div>
@@ -371,16 +417,14 @@
 
             // Avatar Icon
             const avatar = document.createElement('div');
-            avatar.className = `w-9 h-9 rounded-2xl flex items-center justify-center shrink-0 border text-base ${
-                role === 'user' ? 'bg-slate-800 border-slate-700 text-slate-300' : 'bg-emerald-950/60 border-emerald-500/20 text-emerald-400'
-            }`;
+            avatar.className = `w-9 h-9 rounded-2xl flex items-center justify-center shrink-0 border text-base ${role === 'user' ? 'bg-slate-800 border-slate-700 text-slate-300' : 'bg-emerald-950/60 border-emerald-500/20 text-emerald-400'
+                }`;
             avatar.innerText = role === 'user' ? '👨‍🌾' : '🔧';
 
             // Message bubble content
             const messageBody = document.createElement('div');
-            messageBody.className = `glass-panel max-w-[75%] p-4 rounded-2xl border ${
-                role === 'user' ? 'rounded-tr-none border-slate-800/80 bg-slate-900/40' : 'rounded-tl-none border-emerald-500/10'
-            }`;
+            messageBody.className = `glass-panel max-w-[75%] p-4 rounded-2xl border ${role === 'user' ? 'rounded-tr-none border-slate-800/80 bg-slate-900/40' : 'rounded-tl-none border-emerald-500/10'
+                }`;
 
             if (isLoading) {
                 // Return pulsing loader inside assistant bubble
@@ -425,8 +469,8 @@
         // Render session entries in left sidebar
         function renderSessionList() {
             sessionList.innerHTML = '';
-            const entries = Object.values(savedSessions).sort((a,b) => new Date(b.timestamp) - new Date(a.timestamp));
-            
+            const entries = Object.values(savedSessions).sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+
             if (entries.length === 0) {
                 sessionList.innerHTML = '<p class="text-xs text-slate-600 px-3 py-2 italic">No previous chats. Start a conversation!</p>';
                 return;
@@ -434,9 +478,8 @@
 
             entries.forEach(e => {
                 const btn = document.createElement('button');
-                btn.className = `w-full text-left py-2.5 px-3 rounded-xl transition text-xs font-medium flex items-center justify-between group ${
-                    activeSessionId === e.id ? 'bg-slate-900 border border-slate-800 text-emerald-400' : 'text-slate-400 hover:bg-slate-900/60 hover:text-slate-200'
-                }`;
+                btn.className = `w-full text-left py-2.5 px-3 rounded-xl transition text-xs font-medium flex items-center justify-between group ${activeSessionId === e.id ? 'bg-slate-900 border border-slate-800 text-emerald-400' : 'text-slate-400 hover:bg-slate-900/60 hover:text-slate-200'
+                    }`;
                 btn.innerHTML = `
                     <span class="truncate flex-1" onclick="loadSession('${e.id}')">💬 ${e.title}</span>
                     <button onclick="deleteSession(event, '${e.id}')" class="opacity-0 group-hover:opacity-100 p-1 hover:text-red-400 transition" title="Delete conversation">🗑️</button>
@@ -473,7 +516,7 @@
             event.stopPropagation();
             delete savedSessions[id];
             localStorage.setItem('yanmar_rag_sessions', JSON.stringify(savedSessions));
-            
+
             if (activeSessionId === id) {
                 startNewChat();
             } else {
@@ -489,7 +532,7 @@
             messagesContainer.innerHTML = '';
             messagesContainer.classList.add('hidden');
             landingWelcome.classList.remove('hidden');
-            
+
             referencesContainer.innerHTML = '<div class="text-xs text-slate-600 italic py-2">Retrieved manual pages will appear here during active chat...</div>';
             diagramsContainer.innerHTML = '<div class="text-xs text-slate-600 italic py-2">Retrieved diagram matching will show here...</div>';
             totalMatchesBadge.innerText = '0 matches';
@@ -520,11 +563,12 @@
 
         // Generate dynamic UUID helper
         function generateUUID() {
-            return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+            return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) {
                 const r = Math.random() * 16 | 0, v = c === 'x' ? r : (r & 0x3 | 0x8);
                 return v.toString(16);
             });
         }
     </script>
 </body>
+
 </html>
