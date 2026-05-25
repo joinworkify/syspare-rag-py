@@ -18,7 +18,13 @@ build-cache-operation:
 sync-s3:
 	curl -s -X POST "http://localhost:$(PORT)/api/sync-to-s3" | python3 -m json.tool
 
+pull-s3:
+	curl -s -X POST "http://localhost:$(PORT)/api/pull-from-s3" | python3 -m json.tool
+
+pull-s3-operation:
+	curl -s -X POST "http://localhost:$(PORT)/api/pull-from-s3?manual_id=YM358_operation" | python3 -m json.tool
+
 test:
 	uv run pytest
 
-.PHONY: dev serve install build-cache build-cache-operation sync-s3 test
+.PHONY: dev serve install build-cache build-cache-operation sync-s3 pull-s3 pull-s3-operation test

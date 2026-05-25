@@ -797,6 +797,30 @@ def api_sync_to_s3(manual_id: Optional[str] = None):
     )
 
 
+@app.post("/api/pull-from-s3")
+def api_pull_from_s3(manual_id: Optional[str] = None):
+    """Download one manual's cache and PDFs from S3 into local dirs."""
+    try:
+        manual = _resolve_manual(manual_id)
+    except RuntimeError as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+
+    if not is_s3_configured():
+        return JSONResponse(
+            {"ok": False, "error": "S3 not configured. Set AWS_* and S3_BUCKET_NAME."},
+            status_code=400,
+        )
+    _sync_from_s3(manual)
+    _clear_rag_state(manual.manual_id)
+    return JSONResponse(
+        {
+            "ok": True,
+            "manual_id": manual.manual_id,
+            "message": f"Pulled cache and PDFs from S3 for {manual.manual_id}. RAG state cleared.",
+        }
+    )
+
+
 @app.post("/api/query", response_model=QueryResponse)
 def api_query(payload: QueryRequest):
     """

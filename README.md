@@ -190,6 +190,8 @@ Use `make` shortcuts (requires `uv` installed):
 | `make build-cache` | Rebuild cache for `YM358_service` from PDFs |
 | `make build-cache-operation` | Rebuild cache for `YM358_operation` from PDFs |
 | `make sync-s3` | Push local cache + PDFs to S3 |
+| `make pull-s3` | Pull cache + PDFs from S3 (default manual) |
+| `make pull-s3-operation` | Pull cache + PDFs from S3 for `YM358_operation` |
 | `make test` | Run test suite |
 
 Custom port: `make dev PORT=9000`
