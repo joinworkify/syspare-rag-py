@@ -745,10 +745,10 @@ class MultimodalRAGPipeline:
         final_context_text = "\n".join(context_text)
 
         context_images: List[Any] = []
-        for _, value in image_matches.items():
+        for idx, (_, value) in enumerate(image_matches.items()):
             context_images.extend(
                 [
-                    "Image: ",
+                    f"Image {idx+1}: ",
                     value["image_object"],
                     "Caption: ",
                     value["image_description"],
@@ -765,6 +765,9 @@ class MultimodalRAGPipeline:
 
         prompt = (
             "Instructions: Compare the images and the text provided as Context: to answer multiple Question:\n"
+            "CRITICAL CITATION RULE: When answering, if you use or reference information from a specific image to support your explanation, "
+            "you MUST cite it inline using the format [Image X] where X is the image index number (e.g. [Image 1], [Image 2]). "
+            "Always include these inline references if you rely on details or visual elements from the images.\n\n"
             f"{lang_line}"
             f"{reasoning_line}"
             # 'If unsure, respond, "Not enough context to answer".\n\n'

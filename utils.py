@@ -956,6 +956,28 @@ def get_similar_image_from_query(
     Returns:
         A dictionary containing information about the top N most similar images, including cosine scores, image objects, paths, page numbers, text excerpts, and descriptions.
     """
+    if column_name not in image_metadata_df.columns:
+        # Fallback to alternate column names if possible for backward compatibility
+        candidates = [
+            "text_embedding_from_image_description",
+            "mm_embedding_from_img_only",
+            "image_embedding",
+            "embedding",
+        ]
+        found = False
+        for cand in candidates:
+            if cand in image_metadata_df.columns:
+                print(f"[utils] Warning: Column '{column_name}' not found in image_metadata_df. Falling back to '{cand}'.")
+                column_name = cand
+                found = True
+                break
+        if not found:
+            available_cols = list(image_metadata_df.columns)
+            raise KeyError(
+                f"Column '{column_name}' not found in the 'image_metadata_df'. "
+                f"Available columns: {available_cols}"
+            )
+
     # Check if image embedding is used
     if image_emb:
         # Calculate cosine similarity between query image and metadata images
@@ -1073,7 +1095,21 @@ def get_similar_text_from_query(
     """
 
     if column_name not in text_metadata_df.columns:
-        raise KeyError(f"Column '{column_name}' not found in the 'text_metadata_df'")
+        # Fallback to alternate column names if possible for backward compatibility
+        candidates = ["text_embedding_chunk", "text_embedding", "text_embedding_page", "embedding"]
+        found = False
+        for cand in candidates:
+            if cand in text_metadata_df.columns:
+                print(f"[utils] Warning: Column '{column_name}' not found in text_metadata_df. Falling back to '{cand}'.")
+                column_name = cand
+                found = True
+                break
+        if not found:
+            available_cols = list(text_metadata_df.columns)
+            raise KeyError(
+                f"Column '{column_name}' not found in the 'text_metadata_df'. "
+                f"Available columns: {available_cols}"
+            )
 
     query_vector = get_user_query_text_embeddings(query)
 
