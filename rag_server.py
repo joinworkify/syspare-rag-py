@@ -1661,6 +1661,16 @@ def api_chat(payload: ChatRequest):
         role_label = "Farmer" if msg.role == "user" else "Tractor Assistant"
         history_str += f"{role_label}: {msg.content}\n"
 
+    lang = (payload.answer_language or "auto").strip().lower()
+    if lang in ("en", "english"):
+        lang_instruction = "You MUST write your entire response in English."
+    elif lang in ("my", "mm", "myanmar", "burmese"):
+        lang_instruction = "You MUST write your entire response in Myanmar (Burmese)."
+    elif lang in ("ja", "jp", "japanese"):
+        lang_instruction = "You MUST write your entire response in Japanese."
+    else:
+        lang_instruction = "Write your response in the language of the farmer's latest query (e.g. English, Myanmar, or Japanese)."
+
     system_prompt = (
         "You are an empathetic, expert tractor technician and farmer's advisor.\n"
         "Your goal is to guide the farmer safely and step-by-step through their troubleshooting scenario.\n\n"
@@ -1669,9 +1679,11 @@ def api_chat(payload: ChatRequest):
         "2. Keep a friendly, helpful tone to support the farmer or mechanic.\n"
         "3. Only use instructions from the provided Operation Manual Clips or reference details in the Retrieved Images below.\n"
         "4. CRITICAL IMAGE CITATION RULE: If you use or refer to details, instructions, or visuals from a retrieved image to support your explanation, "
-        "you MUST cite it inline using the format [Image X] where X is the image index (e.g. [Image 1], [Image 2]). "
-        "Only cite an image if it is relevant to the answer. If the manual clips do not contain the answer, "
-        "gently instruct the farmer to perform general safety steps and check in with their local dealer.\n\n"
+        "you MUST cite it inline using the format [Image X] where X is the image index (e.g. [Image 1], [Image 2]). Only cite an image if it is relevant to the answer.\n"
+        "5. CRITICAL MANUAL CLIP CITATION RULE: Do NOT EVER cite, print, or reference any '[Manual Clip X]' or 'Manual Clip' indexes/tags in your response. "
+        "Do not mention manual clip numbers. Speak naturally as an advisor, using the manual clip text silently as your background knowledge. "
+        "If the manual clips do not contain the answer, gently instruct the farmer to perform general safety steps and check in with their local dealer.\n"
+        f"6. LANGUAGE RULE: {lang_instruction}\n\n"
         f"Operation Manual Clips:\n{context_str}\n"
         f"Retrieved Images Context:\n{context_images_str}\n"
         f"Conversation History:\n{history_str}"
