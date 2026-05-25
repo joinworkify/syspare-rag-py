@@ -1,7 +1,8 @@
 PORT ?= 8000
+WORKERS ?= 4
 
 dev:
-	uv run uvicorn rag_server:app --reload --port $(PORT)
+	RAG_BUILD_WORKERS=$(WORKERS) uv run uvicorn rag_server:app --reload --port $(PORT)
 
 serve:
 	uv run gunicorn rag_server:app --workers 1 --worker-class uvicorn.workers.UvicornWorker --bind 0.0.0.0:$(PORT)
