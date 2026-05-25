@@ -180,68 +180,79 @@
           </svg>
           Gemini Generated Answer
         </h2>
-        <div class="text-slate-300 text-sm leading-relaxed whitespace-pre-wrap select-all">{{ answer }}</div>
+        <div class="text-slate-300 text-sm leading-relaxed whitespace-pre-wrap select-all generated-answer-container">{{ answer }}</div>
       </div>
 
       <!-- Images (5 cols) -->
-      <div class="xl:col-span-5 bg-slate-900/60 rounded-2xl border border-slate-800 shadow-xl p-6">
-        <h2 class="text-sm font-semibold text-slate-300 mb-2 flex items-center gap-2">
-          <svg class="w-4.5 h-4.5 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
-          </svg>
-          Retrieved Images
-        </h2>
-        <p class="text-xs text-slate-500 mb-4">Click diagram thumbnails to enlarge</p>
-        
-        <div class="grid grid-cols-2 gap-3" id="rag-images">
-          {% for img in images %}
-          <button type="button" class="rag-image-thumb text-left rounded-xl border border-slate-800 overflow-hidden bg-slate-950 hover:ring-2 hover:ring-emerald-500/50 hover:border-emerald-400 transition duration-200 cursor-pointer focus:outline-none"
-            data-src="{{ img.img_url }}"
-            data-caption="{{ img.caption|e }}"
-            data-doc="{{ img.doc|e if img.doc else '' }}"
-            data-page="{{ img.page|e if img.page else '' }}">
-            
-            <img src="{{ img.img_url }}" alt="" class="w-full aspect-[4/3] object-cover pointer-events-none" loading="lazy" />
-            <div class="p-2.5 space-y-1.5">
-              <div class="flex flex-wrap gap-1">
-                {% if img.doc %}<span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-semibold bg-slate-800 text-slate-300 border border-slate-700">{{ img.doc }}</span>{% endif %}
-                {% if img.page %}<span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-semibold bg-slate-800 text-slate-300 border border-slate-700">p{{ img.page }}</span>{% endif %}
-                {% if img.score is not none %}<span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">{{ "%.3f"|format(img.score) }}</span>{% endif %}
+      <div class="xl:col-span-5 bg-slate-900/60 rounded-2xl border border-slate-800 shadow-xl p-6 flex flex-col justify-between">
+        <div>
+          <h2 class="text-sm font-semibold text-slate-300 mb-2 flex items-center gap-2">
+            <svg class="w-4.5 h-4.5 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+            </svg>
+            Retrieved Images
+          </h2>
+          <p class="text-xs text-slate-500 mb-4">Click diagram thumbnails to enlarge</p>
+          
+          <div class="grid grid-cols-2 gap-3" id="rag-images">
+            {% for img in images %}
+            <button type="button" class="rag-image-thumb text-left rounded-xl border border-slate-800 overflow-hidden bg-slate-950 hover:ring-2 hover:ring-emerald-500/50 hover:border-emerald-400 transition duration-200 cursor-pointer focus:outline-none"
+              data-index="{{ loop.index }}"
+              data-src="{{ img.img_url }}"
+              data-caption="{{ img.caption|e }}"
+              data-doc="{{ img.doc|e if img.doc else '' }}"
+              data-page="{{ img.page|e if img.page else '' }}">
+              
+              <img src="{{ img.img_url }}" alt="" class="w-full aspect-[4/3] object-cover pointer-events-none" loading="lazy" />
+              <div class="p-2.5 space-y-1.5">
+                <div class="flex flex-wrap gap-1">
+                  <span class="inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">Ref [{{ loop.index }}]</span>
+                  {% if img.doc %}<span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-semibold bg-slate-800 text-slate-300 border border-slate-700 truncate max-w-[70px]">{{ img.doc }}</span>{% endif %}
+                  {% if img.page %}<span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-semibold bg-slate-800 text-slate-300 border border-slate-700">p{{ img.page }}</span>{% endif %}
+                  {% if img.score is not none %}<span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">{{ "%.3f"|format(img.score) }}</span>{% endif %}
+                </div>
+                <p class="text-[11px] text-slate-400 overflow-hidden text-left" style="display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;">{{ img.caption }}</p>
               </div>
-              <p class="text-[11px] text-slate-400 overflow-hidden text-left" style="display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;">{{ img.caption }}</p>
+            </button>
+            {% endfor %}
+          </div>
+          {% if not images %}
+          <div class="text-center py-8 text-xs text-slate-500">
+            No matching technical diagrams retrieved.
+          </div>
+          {% endif %}
+        </div>
+
+        {% if texts %}
+        <!-- Collapsible Text Chunks inside the retrieved images box -->
+        <details class="mt-6 border-t border-slate-800/80 pt-4 group">
+          <summary class="flex items-center justify-between text-xs font-semibold text-slate-400 hover:text-slate-200 cursor-pointer select-none outline-none">
+            <span class="flex items-center gap-2">
+              <svg class="w-4 h-4 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+              </svg>
+              Retrieved Text Chunks ({{ texts|length }})
+            </span>
+            <svg class="w-4 h-4 text-slate-500 transition-transform group-open:rotate-180" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+            </svg>
+          </summary>
+          <div class="mt-4 space-y-4 max-h-[300px] overflow-y-auto pr-1 scrollbar-thin">
+            {% for t in texts %}
+            <div class="border-b border-slate-850 pb-3 last:border-0 last:pb-0">
+              <div class="flex flex-wrap gap-1.5 mb-1.5">
+                {% if t.doc %}<span class="inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-semibold bg-slate-950 text-slate-400 border border-slate-800">{{ t.doc }}</span>{% endif %}
+                {% if t.page %}<span class="inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-semibold bg-slate-950 text-slate-400 border border-slate-800">p{{ t.page }}</span>{% endif %}
+                {% if t.score is not none %}<span class="inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">{{ "%.3f"|format(t.score) }}</span>{% endif %}
+              </div>
+              <p class="text-[11px] text-slate-400 leading-relaxed whitespace-pre-wrap select-all font-mono bg-slate-950/40 p-2 rounded-lg border border-slate-850">{{ t.chunk_text }}</p>
             </div>
-          </button>
-          {% endfor %}
-        </div>
-        {% if not images %}
-        <div class="text-center py-8 text-xs text-slate-500">
-          No matching technical diagrams retrieved.
-        </div>
+            {% endfor %}
+          </div>
+        </details>
         {% endif %}
       </div>
     </div>
-
-    <!-- Text chunks -->
-    <section class="bg-slate-900/60 rounded-2xl border border-slate-800 shadow-xl p-6">
-      <h2 class="text-sm font-semibold text-slate-300 mb-4 flex items-center gap-2">
-        <svg class="w-4.5 h-4.5 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
-        </svg>
-        Retrieved Text Chunks
-      </h2>
-      <div class="space-y-4 max-h-[500px] overflow-y-auto pr-1 scrollbar-thin">
-        {% for t in texts %}
-        <div class="border-b border-slate-800 pb-4 last:border-0 last:pb-0">
-          <div class="flex flex-wrap gap-1.5 mb-2">
-            {% if t.doc %}<span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-semibold bg-slate-850 text-slate-400 border border-slate-800">{{ t.doc }}</span>{% endif %}
-            {% if t.page %}<span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-semibold bg-slate-850 text-slate-400 border border-slate-800">p{{ t.page }}</span>{% endif %}
-            {% if t.score is not none %}<span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">{{ "%.3f"|format(t.score) }}</span>{% endif %}
-          </div>
-          <p class="text-xs text-slate-400 leading-relaxed whitespace-pre-wrap select-all">{{ t.chunk_text }}</p>
-        </div>
-        {% endfor %}
-      </div>
-    </section>
     {% endif %}
   </div>
 
@@ -253,8 +264,23 @@
         <button type="button" id="lightbox-close" class="absolute -top-12 right-0 flex items-center justify-center w-10 h-10 rounded-full bg-slate-800 hover:bg-slate-700 text-white transition duration-200 z-10 border border-slate-700" aria-label="Close">
           <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
         </button>
-        <img id="lightbox-img" src="" alt="" class="max-w-full max-h-[80vh] w-auto h-auto object-contain rounded-xl shadow-2xl border border-slate-800" />
-        <div id="lightbox-caption" class="mt-4 px-5 py-2.5 max-w-2xl rounded-xl bg-slate-900/95 border border-slate-800 text-slate-300 text-sm text-center shadow-lg"></div>
+        <img id="lightbox-img" src="" alt="" class="max-w-full max-h-[65vh] w-auto h-auto object-contain rounded-xl shadow-2xl border border-slate-800" />
+        
+        <!-- Collapsible caption dropdown inside lightbox -->
+        <details id="lightbox-caption-details" class="mt-4 w-full max-w-2xl rounded-xl bg-slate-900/95 border border-slate-800 shadow-2xl group overflow-hidden">
+          <summary class="px-5 py-2.5 flex items-center justify-between text-slate-300 text-sm font-semibold cursor-pointer select-none outline-none hover:bg-slate-800/40 transition">
+            <span id="lightbox-meta" class="truncate max-w-[70%] text-slate-300 font-medium">Image Details</span>
+            <span class="flex items-center gap-1.5 text-xs text-emerald-400 font-medium shrink-0 ml-2">
+              <span>View Caption</span>
+              <svg class="w-4 h-4 text-slate-400 transition-transform group-open:rotate-180" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+              </svg>
+            </span>
+          </summary>
+          <div class="px-5 pb-4 pt-2.5 text-slate-300 text-xs border-t border-slate-800/80 leading-relaxed max-h-[160px] overflow-y-auto pr-1 scrollbar-thin whitespace-pre-wrap text-left" id="lightbox-desc">
+            <!-- Full caption goes here -->
+          </div>
+        </details>
       </div>
     </div>
   </div>
@@ -301,28 +327,68 @@
       var lightbox = document.getElementById('image-lightbox');
       if (!lightbox) return;
       var img = document.getElementById('lightbox-img');
-      var captionEl = document.getElementById('lightbox-caption');
+      var metaEl = document.getElementById('lightbox-meta');
+      var descEl = document.getElementById('lightbox-desc');
+      var captionDetails = document.getElementById('lightbox-caption-details');
       var closeBtn = document.getElementById('lightbox-close');
       var backdrop = document.getElementById('lightbox-backdrop');
-
+ 
       function openLightbox(src, caption, doc, page) {
         img.src = src;
         img.alt = caption || 'Retrieved image';
-        var parts = [];
-        if (doc) parts.push(doc);
-        if (page) parts.push('p' + page);
-        if (caption) parts.push(caption);
-        captionEl.textContent = parts.join(' · ');
-        captionEl.style.display = parts.length ? 'block' : 'none';
+        
+        var metaText = 'Image Details';
+        var metaParts = [];
+        if (doc) metaParts.push(doc);
+        if (page) metaParts.push('p' + page);
+        if (metaParts.length) {
+          metaText = metaParts.join(' · ');
+        }
+        
+        if (metaEl) metaEl.textContent = metaText;
+        if (descEl) descEl.textContent = caption || 'No description available.';
+        
+        // Reset collapsed details state so user focuses on the image first
+        if (captionDetails) captionDetails.removeAttribute('open');
+        
         lightbox.classList.remove('hidden');
         document.body.style.overflow = 'hidden';
       }
 
+      window.openImageByIndex = function(e, index) {
+        if (e) {
+          e.preventDefault();
+          e.stopPropagation();
+        }
+        var thumbs = document.querySelectorAll('.rag-image-thumb');
+        if (thumbs && thumbs[index - 1]) {
+          var btn = thumbs[index - 1];
+          openLightbox(btn.dataset.src, btn.dataset.caption || '', btn.dataset.doc || '', btn.dataset.page || '');
+        } else {
+          console.warn("No matched image found for index " + index);
+        }
+      };
+
+      function formatGeneratedAnswer() {
+        var container = document.querySelector('.generated-answer-container');
+        if (!container) return;
+        var text = container.innerHTML;
+        // Match [Image X] or [Image X] references (case-insensitive, optional space)
+        var regex = /\[Image\s*(\d+)\]/gi;
+        container.innerHTML = text.replace(regex, function(match, p1) {
+          var index = parseInt(p1, 10);
+          return `<button type="button" onclick="window.openImageByIndex(event, ${index})" class="inline-flex items-center gap-1.5 px-2 py-0.5 mx-0.5 rounded-lg bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/20 hover:border-emerald-400/40 text-xs font-semibold select-none cursor-pointer transition duration-150 transform hover:scale-[1.03] active:scale-[0.98]" title="Click to view image">[🖼️ Image ${index}]</button>`;
+        });
+      }
+
+      // Format answers on page load
+      formatGeneratedAnswer();
+ 
       function closeLightbox() {
         lightbox.classList.add('hidden');
         document.body.style.overflow = '';
       }
-
+ 
       document.getElementById('rag-images')?.addEventListener('click', function (e) {
         var btn = e.target.closest('.rag-image-thumb');
         if (!btn) return;

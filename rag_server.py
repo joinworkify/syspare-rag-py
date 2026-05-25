@@ -1651,6 +1651,11 @@ def api_chat(payload: ChatRequest):
     for idx, t in enumerate(text_matches.values()):
         context_str += f"Manual Clip [{idx+1}]:\n{t.get('chunk_text', '')}\n\n"
 
+    context_images_str = ""
+    for idx, img in enumerate(image_matches.values()):
+        caption = img.get("image_description") or img.get("img_desc") or ""
+        context_images_str += f"Image {idx+1}:\nCaption: {caption}\n\n"
+
     history_str = ""
     for msg in payload.history:
         role_label = "Farmer" if msg.role == "user" else "Tractor Assistant"
@@ -1662,9 +1667,13 @@ def api_chat(payload: ChatRequest):
         "Guidelines:\n"
         "1. Keep answers concise, extremely practical, and structured as steps or simple recommendations.\n"
         "2. Keep a friendly, helpful tone to support the farmer or mechanic.\n"
-        "3. Only use instructions from the provided Operation Manual Clips below. If the manual clips do not contain the answer, "
+        "3. Only use instructions from the provided Operation Manual Clips or reference details in the Retrieved Images below.\n"
+        "4. CRITICAL IMAGE CITATION RULE: If you use or refer to details, instructions, or visuals from a retrieved image to support your explanation, "
+        "you MUST cite it inline using the format [Image X] where X is the image index (e.g. [Image 1], [Image 2]). "
+        "Only cite an image if it is relevant to the answer. If the manual clips do not contain the answer, "
         "gently instruct the farmer to perform general safety steps and check in with their local dealer.\n\n"
         f"Operation Manual Clips:\n{context_str}\n"
+        f"Retrieved Images Context:\n{context_images_str}\n"
         f"Conversation History:\n{history_str}"
         f"Farmer's Latest Query: {payload.question}\n\n"
         "Tractor Assistant Response:"
