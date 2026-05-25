@@ -44,6 +44,9 @@ out_images
 # Per-manual local stores (regenerable; sync via S3 rag-data/manuals/<id>/...)
 manuals/
 
+# Generated eval outputs
+artifacts/eval/
+
 # Internal docs (untracked)
 docs/internal/
 .claude

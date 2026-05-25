@@ -1,0 +1,484 @@
+{
+  "manual_id": "YM358_operation",
+  "manual_file": "ym358a.pdf",
+  "section": "16. TROUBLESHOOTING",
+  "source_note": "Curated from YM351R/YM358R Operation Manual section 16, PyMuPDF 1-indexed pages 143-153.",
+  "cases": [
+    {
+      "id": "engine_hard_start",
+      "system": "engine",
+      "problem": "The engine is hard to start or does not start at all",
+      "source_pages": [143, 144],
+      "checks": [
+        "battery fully charged",
+        "fuses blown",
+        "loose or corroded battery terminals and cables",
+        "fuel shut-off valve is closed",
+        "fuel level is sufficient",
+        "correct fuel specification",
+        "water in sediment bowl",
+        "fuel filter clogged",
+        "air in fuel system",
+        "air intake system clogged",
+        "engine oil viscosity is high"
+      ],
+      "remedies": [
+        "charge the battery",
+        "replace blown fuses",
+        "tighten loose battery terminals",
+        "clean corroded battery terminals and cables",
+        "turn fuel shut-off valve to ON",
+        "add specified fuel",
+        "use correct fuel specification",
+        "remove water and clean sediment bowl",
+        "replace fuel filter",
+        "bleed air from fuel system",
+        "clean air intake system",
+        "replace engine oil with specified viscosity"
+      ],
+      "dealer_required_actions": [
+        "starter key switch faulty",
+        "starter faulty",
+        "glow plug or air heater faulty",
+        "fuel line leak or bend",
+        "fuel injection pump timing",
+        "fuel nozzles faulty",
+        "valve clearance"
+      ],
+      "must_include": ["battery", "fuse", "fuel", "sediment bowl", "fuel filter"],
+      "dealer_boundary": true
+    },
+    {
+      "id": "engine_runs_rough_or_stalls",
+      "system": "engine",
+      "problem": "The engine runs roughly or stalls frequently",
+      "source_pages": [145],
+      "checks": [
+        "battery fully charged",
+        "loose or corroded battery terminals and cables",
+        "fuel level is sufficient",
+        "correct fuel specification",
+        "water in sediment bowl",
+        "fuel filter clogged",
+        "air in fuel system",
+        "air intake system clogged",
+        "coolant temperature is too low",
+        "engine idle speed is too low"
+      ],
+      "remedies": [
+        "charge the battery",
+        "tighten loose battery terminals",
+        "clean corroded battery terminals and cables",
+        "add specified fuel",
+        "use correct fuel specification",
+        "remove water and clean sediment bowl",
+        "replace fuel filter",
+        "bleed air from fuel system",
+        "clean air intake system"
+      ],
+      "dealer_required_actions": [
+        "fuel line leak or bend",
+        "fuel injection pump timing",
+        "coolant temperature too low",
+        "valve clearance"
+      ],
+      "must_include": ["battery", "fuel", "fuel filter", "air", "sediment bowl"],
+      "dealer_boundary": true
+    },
+    {
+      "id": "engine_has_no_power",
+      "system": "engine",
+      "problem": "The engine has no power",
+      "source_pages": [146],
+      "checks": [
+        "correct fuel specification",
+        "water in sediment bowl",
+        "fuel filter clogged",
+        "air in fuel system",
+        "radiator air intake clogged",
+        "engine overheating",
+        "engine oil viscosity is high",
+        "crankcase ventilation tube clogged",
+        "valve clearance"
+      ],
+      "remedies": [
+        "use correct fuel specification",
+        "remove water and clean sediment bowl",
+        "replace fuel filter",
+        "bleed air from fuel system",
+        "clean radiator air intake",
+        "replace engine oil with specified viscosity"
+      ],
+      "dealer_required_actions": [
+        "fuel injection pump timing",
+        "fuel nozzles faulty",
+        "engine overheating",
+        "coolant temperature too low",
+        "crankcase ventilation tube",
+        "valve clearance"
+      ],
+      "must_include": ["fuel", "sediment bowl", "fuel filter", "air", "radiator"],
+      "dealer_boundary": true
+    },
+    {
+      "id": "engine_overheated",
+      "system": "engine",
+      "problem": "The engine has overheated",
+      "source_pages": [147],
+      "checks": [
+        "air intake system clogged",
+        "coolant level is low",
+        "grille, radiator screen, or radiator fins dirty",
+        "cooling system needs flushing",
+        "radiator cap or thermostat faulty",
+        "alternator/fan belt loose or faulty"
+      ],
+      "remedies": [
+        "clean air intake system",
+        "add coolant",
+        "clean radiator grille, radiator screen, and radiator fins",
+        "flush cooling system",
+        "adjust or replace alternator/fan belt"
+      ],
+      "dealer_required_actions": ["radiator cap faulty", "thermostat faulty"],
+      "must_include": ["coolant", "radiator", "air intake", "fan belt"],
+      "dealer_boundary": true
+    },
+    {
+      "id": "engine_knocking_sound",
+      "system": "engine",
+      "problem": "There is a knocking sound coming from the engine",
+      "source_pages": [147],
+      "checks": [
+        "correct fuel specification",
+        "water in sediment bowl",
+        "fuel injection pump timing",
+        "fuel nozzles faulty",
+        "coolant temperature too low",
+        "engine overheating",
+        "engine oil level is low",
+        "engine oil viscosity is low",
+        "valve clearance"
+      ],
+      "remedies": [
+        "use correct fuel specification",
+        "remove water and clean sediment bowl",
+        "add engine oil",
+        "replace engine oil with specified viscosity"
+      ],
+      "dealer_required_actions": [
+        "fuel injection pump timing",
+        "fuel nozzles faulty",
+        "coolant temperature too low",
+        "engine overheating",
+        "valve clearance"
+      ],
+      "must_include": ["fuel", "sediment bowl", "engine oil", "dealer"],
+      "dealer_boundary": true
+    },
+    {
+      "id": "engine_consumes_lot_of_fuel",
+      "system": "engine",
+      "problem": "The engine is consuming a lot of fuel",
+      "source_pages": [148],
+      "checks": [
+        "correct fuel specification",
+        "fuel system leak",
+        "fuel injection pump timing",
+        "fuel nozzles faulty",
+        "radiator air intake clogged",
+        "engine oil viscosity is high",
+        "valve clearance"
+      ],
+      "remedies": [
+        "use correct fuel specification",
+        "clean radiator air intake",
+        "replace engine oil with specified viscosity"
+      ],
+      "dealer_required_actions": [
+        "fuel system leak",
+        "fuel injection pump timing",
+        "fuel nozzles faulty",
+        "valve clearance"
+      ],
+      "must_include": ["fuel", "radiator", "engine oil", "dealer"],
+      "dealer_boundary": true
+    },
+    {
+      "id": "oil_pressure_low",
+      "system": "lubrication",
+      "problem": "The oil pressure is low",
+      "source_pages": [148],
+      "checks": ["engine oil level is low", "engine oil viscosity is high"],
+      "remedies": [
+        "add engine oil",
+        "replace engine oil with specified viscosity"
+      ],
+      "dealer_required_actions": [],
+      "must_include": ["engine oil", "oil level", "viscosity"],
+      "dealer_boundary": false
+    },
+    {
+      "id": "engine_consumes_lot_of_engine_oil",
+      "system": "lubrication",
+      "problem": "The engine is consuming a lot of engine oil",
+      "source_pages": [148],
+      "checks": ["oil leaks", "valve clearance"],
+      "remedies": [],
+      "dealer_required_actions": ["oil leaks", "valve clearance"],
+      "must_include": ["oil leak", "valve clearance", "dealer"],
+      "dealer_boundary": true
+    },
+    {
+      "id": "white_smoke_from_engine",
+      "system": "engine",
+      "problem": "There is white smoke coming from the engine",
+      "source_pages": [149],
+      "checks": [
+        "fuel injection pump timing",
+        "coolant temperature too low",
+        "engine oil level over filled",
+        "valve clearance",
+        "piston rings worn out",
+        "compression pressure too low",
+        "cylinder liner damaged"
+      ],
+      "remedies": ["drain engine oil to the specified level"],
+      "dealer_required_actions": [
+        "fuel injection pump timing",
+        "coolant temperature too low",
+        "valve clearance",
+        "piston rings worn out",
+        "compression pressure too low",
+        "cylinder liner damaged"
+      ],
+      "must_include": ["white smoke", "engine oil", "fuel injection", "dealer"],
+      "dealer_boundary": true
+    },
+    {
+      "id": "black_smoke_from_engine",
+      "system": "engine",
+      "problem": "There is black smoke coming from the engine",
+      "source_pages": [150],
+      "checks": [
+        "correct fuel specification",
+        "air filter clogged",
+        "water in sediment bowl",
+        "fuel nozzles faulty",
+        "fuel injection pump timing",
+        "air intake system clogged",
+        "engine oil level correct",
+        "valve clearance"
+      ],
+      "remedies": [
+        "use correct fuel specification",
+        "replace air filter",
+        "remove water and clean sediment bowl",
+        "clean air intake system",
+        "drain engine oil to the specified level"
+      ],
+      "dealer_required_actions": [
+        "fuel nozzles faulty",
+        "fuel injection pump timing",
+        "valve clearance"
+      ],
+      "must_include": ["black smoke", "air filter", "fuel", "sediment bowl"],
+      "dealer_boundary": true
+    },
+    {
+      "id": "charging_light_stays_on",
+      "system": "electrical",
+      "problem": "The alternator or battery charging light remains illuminated even though the engine is running",
+      "source_pages": [150],
+      "checks": [
+        "alternator/fan belt loose or faulty",
+        "fuses blown",
+        "alternator faulty",
+        "battery faulty",
+        "engine idle speed too low"
+      ],
+      "remedies": [
+        "adjust or replace alternator/fan belt",
+        "replace blown fuses",
+        "replace battery",
+        "adjust engine idle speed"
+      ],
+      "dealer_required_actions": ["alternator faulty"],
+      "must_include": ["charging light", "fan belt", "fuse", "battery"],
+      "dealer_boundary": true
+    },
+    {
+      "id": "starter_does_not_turn",
+      "system": "electrical",
+      "problem": "The starter does not turn",
+      "source_pages": [151],
+      "checks": [
+        "fuses blown",
+        "starter key switch or starter faulty",
+        "loose or corroded battery terminals and cables",
+        "battery faulty",
+        "interface combination functions correctly"
+      ],
+      "remedies": [
+        "replace blown fuses",
+        "tighten loose battery terminals",
+        "clean corroded battery terminals and cables",
+        "replace battery"
+      ],
+      "dealer_required_actions": [
+        "starter key switch faulty",
+        "starter faulty",
+        "interface combination"
+      ],
+      "must_include": ["starter", "fuse", "battery", "terminal"],
+      "dealer_boundary": true
+    },
+    {
+      "id": "starter_turns_too_slowly",
+      "system": "electrical",
+      "problem": "The starter turns too slowly",
+      "source_pages": [151],
+      "checks": [
+        "starter faulty",
+        "loose or corroded battery terminals and cables",
+        "battery voltage is not lower than 12V",
+        "battery faulty",
+        "engine oil viscosity is high"
+      ],
+      "remedies": [
+        "tighten loose battery terminals",
+        "clean corroded battery terminals and cables",
+        "replace battery",
+        "replace engine oil with specified viscosity"
+      ],
+      "dealer_required_actions": ["starter faulty"],
+      "must_include": ["starter", "battery", "12V", "engine oil"],
+      "dealer_boundary": true
+    },
+    {
+      "id": "rear_brakes_not_working",
+      "system": "brakes",
+      "problem": "The rear brakes are not working correctly",
+      "source_pages": [152],
+      "checks": [
+        "brakes adjusted correctly",
+        "brake linkage worn out or damaged",
+        "brake disk worn out or damaged"
+      ],
+      "remedies": ["adjust the brakes correctly"],
+      "dealer_required_actions": [
+        "brake linkage worn out or damaged",
+        "brake disk worn out or damaged"
+      ],
+      "must_include": ["brake", "adjust", "dealer"],
+      "dealer_boundary": true
+    },
+    {
+      "id": "steering_not_working",
+      "system": "steering",
+      "problem": "The steering is not working",
+      "source_pages": [152],
+      "checks": [
+        "transmission hydraulic oil level is low",
+        "wheel spindles damaged",
+        "steering linkage requires lubrication",
+        "excessive play in steering"
+      ],
+      "remedies": [
+        "add transmission hydraulic oil",
+        "lubricate the steering linkage"
+      ],
+      "dealer_required_actions": [
+        "wheel spindles damaged",
+        "excessive play in steering"
+      ],
+      "must_include": ["steering", "hydraulic oil", "lubricate", "dealer"],
+      "dealer_boundary": true
+    },
+    {
+      "id": "excessive_vibration",
+      "system": "body_and_machinery",
+      "problem": "There is excessive vibration",
+      "source_pages": [153],
+      "checks": [
+        "idle speed is too slow",
+        "drive components are worn out"
+      ],
+      "remedies": ["adjust the idle speed"],
+      "dealer_required_actions": ["drive components worn out"],
+      "must_include": ["vibration", "idle speed", "drive components"],
+      "dealer_boundary": true
+    },
+    {
+      "id": "tractor_does_not_move",
+      "system": "body_and_machinery",
+      "problem": "The engine is running, but the tractor does not move",
+      "source_pages": [153],
+      "checks": [
+        "transmission clutch worn out",
+        "brakes adjusted correctly"
+      ],
+      "remedies": ["adjust the brakes correctly"],
+      "dealer_required_actions": ["transmission clutch worn out"],
+      "must_include": ["transmission clutch", "brake", "adjust"],
+      "dealer_boundary": true
+    },
+    {
+      "id": "three_point_hitch_does_not_rise",
+      "system": "body_and_machinery",
+      "problem": "The 3-point hitch does not rise",
+      "source_pages": [153],
+      "checks": [
+        "transmission hydraulic oil level is too low",
+        "hydraulic flow control/stop knob has been closed",
+        "excessive load on 3-point hitch",
+        "transmission hydraulic oil filter is clogged"
+      ],
+      "remedies": [
+        "add transmission hydraulic oil",
+        "open hydraulic flow control/stop knob",
+        "reduce 3-point hitch load",
+        "replace transmission hydraulic oil filter"
+      ],
+      "dealer_required_actions": [],
+      "must_include": ["3-point hitch", "hydraulic oil", "flow control", "load"],
+      "dealer_boundary": false
+    },
+    {
+      "id": "three_point_hitch_lowers_too_slowly",
+      "system": "body_and_machinery",
+      "problem": "The 3-point hitch lowers too slowly or does not lower at all",
+      "source_pages": [153],
+      "checks": [
+        "hydraulic flow control/stop knob has been closed",
+        "rate of drop is set too slow",
+        "transmission hydraulic oil level is too low"
+      ],
+      "remedies": [
+        "open hydraulic flow control/stop knob to the specified rate",
+        "set hydraulic flow control/stop knob to the specified rate",
+        "add transmission hydraulic oil"
+      ],
+      "dealer_required_actions": [],
+      "must_include": ["3-point hitch", "flow control", "rate", "hydraulic oil"],
+      "dealer_boundary": false
+    },
+    {
+      "id": "three_point_hitch_lowers_too_quickly",
+      "system": "body_and_machinery",
+      "problem": "The 3-point hitch lowers too quickly",
+      "source_pages": [153],
+      "checks": [
+        "rate of drop is set too fast",
+        "excessive load is being placed on the hitch"
+      ],
+      "remedies": [
+        "adjust hydraulic flow control/stop knob to specified rate",
+        "reduce excessive load"
+      ],
+      "dealer_required_actions": [],
+      "must_include": ["3-point hitch", "flow control", "rate", "load"],
+      "dealer_boundary": false
+    }
+  ]
+}
