@@ -180,8 +180,26 @@ syspare-rag-python/
 
 ## 5) Run
 
+Use `make` shortcuts (requires `uv` installed):
+
+| Command | What it does |
+|---|---|
+| `make dev` | Local dev server with hot-reload (port 8000) |
+| `make serve` | Production server — mirrors `render.yaml` (gunicorn) |
+| `make install` | Install / sync all dependencies via uv |
+| `make build-cache` | Rebuild cache for `YM358_service` from PDFs |
+| `make build-cache-operation` | Rebuild cache for `YM358_operation` from PDFs |
+| `make sync-s3` | Push local cache + PDFs to S3 |
+| `make test` | Run test suite |
+
+Custom port: `make dev PORT=9000`
+
+> **First-time setup:** run `make install` then `make dev`. Once the server is running, hit `make build-cache` to build the metadata cache from PDFs (needed if `text_metadata_df.pkl` is missing from `manuals/<id>/cache/`).
+
+**Without make (manual):**
+
 ```bash
-uvicorn rag_server:app --reload --port 8000
+uv run uvicorn rag_server:app --reload --port 8000
 ```
 
 ---
