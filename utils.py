@@ -1,5 +1,6 @@
 import glob
 import os
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
@@ -7,6 +8,28 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 # Concurrent page workers during cache build. Tune with RAG_BUILD_WORKERS env var.
 # Keep ≤5 to stay within Vertex AI default QPM quotas.
 _BUILD_WORKERS = max(1, int(os.environ.get("RAG_BUILD_WORKERS", "4")))
+
+
+def _print_progress(prefix: str, current: int, total: int, start_time: float) -> None:
+    """Print a single-line overwriting progress bar with ETA."""
+    pct = current / total if total else 0
+    bar_width = 24
+    filled = int(bar_width * pct)
+    bar = "█" * filled + "░" * (bar_width - filled)
+    elapsed = time.time() - start_time
+    m_el, s_el = divmod(int(elapsed), 60)
+    eta_str = ""
+    if current > 0 and current < total:
+        rate = elapsed / current
+        remaining = rate * (total - current)
+        m_r, s_r = divmod(int(remaining), 60)
+        eta_str = f" | ETA ~{m_r}m {s_r:02d}s"
+    end = "\n" if current >= total else ""
+    print(
+        f"\r{prefix} [{bar}] {current}/{total} ({pct:.0%}) | {m_el}m {s_el:02d}s{eta_str}   ",
+        end=end,
+        flush=True,
+    )
 
 import cv2
 
@@ -660,11 +683,16 @@ def get_document_metadata(
         text_metadata: Dict[Union[int, str], Dict] = {}
         image_metadata: Dict[Union[int, str], Dict] = {}
 
+        _completed = 0
+        _prog_lock = threading.Lock()
+        _build_start = time.time()
+        print(f"\n[{file_name}] Starting extraction: {num_pages} pages | workers={_BUILD_WORKERS if not add_sleep_after_page else 1}")
+
         def _process_page(page_num: int):
+            nonlocal _completed
             import pymupdf as _fitz
             _doc = _fitz.open(pdf_path)
             try:
-                print(f"Processing page: {page_num + 1}")
                 page = _doc[page_num]
 
                 (
@@ -689,7 +717,6 @@ def get_document_metadata(
                     image_for_gemini, image_name = get_image_for_gemini(
                         _doc, image, image_no, image_save_dir, file_name, page_num
                     )
-                    print(f"Extracting image from page: {page_num + 1}, saved as: {image_name}")
                     if image_for_gemini is None:
                         continue
 
@@ -714,6 +741,10 @@ def get_document_metadata(
                         "mm_embedding_from_img_only": image_embedding,
                         "text_embedding_from_image_description": image_description_text_embedding,
                     }
+
+                with _prog_lock:
+                    _completed += 1
+                    _print_progress(f"[{file_name}] Pages", _completed, num_pages, _build_start)
 
                 return page_num, _text_meta, _image_meta
             finally:

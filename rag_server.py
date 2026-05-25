@@ -2,6 +2,7 @@
 import os
 import shutil
 import threading
+import time
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -22,7 +23,7 @@ from syspare_rag.config import (
     ManualRegistry,
     load_manual_registry_from_env,
 )
-from utils import get_gemini_response
+from utils import get_gemini_response, _print_progress
 
 load_dotenv()
 
@@ -222,8 +223,11 @@ def _upload_images_to_s3_and_rewrite(
         return 0
 
     total = int((df["img_path"].notna() & ~df["img_path"].astype(str).str.startswith("http")).sum())
+    if total == 0:
+        return 0
     count = 0
-    print(f"[{manual.manual_id}] Uploading {total} image(s) to S3...")
+    _upload_start = time.time()
+    print(f"\n[{manual.manual_id}] Uploading {total} image(s) to S3...")
 
     def _upload(value):
         nonlocal count
@@ -232,10 +236,10 @@ def _upload_images_to_s3_and_rewrite(
         try:
             url = upload_image_to_s3(manual.manual_id, str(value))
             count += 1
-            print(f"[{manual.manual_id}] S3 image upload [{count}/{total}]: {Path(str(value)).name}")
+            _print_progress(f"[{manual.manual_id}] S3 upload", count, total, _upload_start)
             return url
         except Exception as exc:
-            print(f"Warning: failed to upload image {value} to S3: {exc}")
+            print(f"\nWarning: failed to upload image {value} to S3: {exc}")
             return value
 
     df["img_path"] = df["img_path"].map(_upload)
