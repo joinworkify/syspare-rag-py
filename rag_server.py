@@ -1601,7 +1601,14 @@ def chat_page():
 
 def _condense_conversational_query(rag, question: str, history: List[ChatMessage]) -> str:
     """Rewrite follow-up question to a standalone search query containing context."""
+    import re
     if not history:
+        # Detect Japanese characters (Hiragana, Katakana, Kanji)
+        if re.search(r"[\u3040-\u309f\u30a0-\u30ff\u4e00-\u9faf]", question):
+            return _rewrite_japanese_to_english_query(rag, question)
+        # Detect Myanmar characters
+        if re.search(r"[\u1000-\u109f]", question):
+            return _rewrite_myanmar_to_english_query(rag, question)
         return question
 
     # Format history into a simple transcript
@@ -1625,7 +1632,13 @@ def _condense_conversational_query(rag, question: str, history: List[ChatMessage
         stream=False,
         generation_config=GenerationConfig(temperature=0.2, max_output_tokens=256),
     )
-    return (out or question).strip()
+    res = (out or question).strip()
+    # Check if the condensed query still contains Japanese or Myanmar characters due to model following errors
+    if re.search(r"[\u3040-\u309f\u30a0-\u30ff\u4e00-\u9faf]", res):
+        res = _rewrite_japanese_to_english_query(rag, res)
+    elif re.search(r"[\u1000-\u109f]", res):
+        res = _rewrite_myanmar_to_english_query(rag, res)
+    return res
 
 
 @app.post("/api/chat", response_model=ChatResponse)
