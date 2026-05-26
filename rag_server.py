@@ -1,5 +1,6 @@
 # rag_server.py
 import os
+import re
 import shutil
 import threading
 import time
@@ -422,7 +423,8 @@ def _english_answer_to_myanmar(
     instruction = (
         "Translate the following English technical answer into natural Myanmar (Burmese). "
         "Preserve the full meaning; keep technical terms accurate (use common Roman abbreviations for parts where helpful). "
-        "Output only Myanmar (Burmese) script text, with no English preamble or labels.\n\n"
+        "IMPORTANT: Preserve any [Image X] citation markers (e.g., [Image 1], [Image 2]) EXACTLY as written — do not translate or remove them. "
+        "Output only Myanmar (Burmese) script text with the preserved [Image X] markers, with no English preamble or labels.\n\n"
         f"English answer:\n{english_answer}\n\nMyanmar answer:"
     )
     out = get_gemini_response(
@@ -461,7 +463,8 @@ def _english_answer_to_japanese(
     instruction = (
         "Translate the following English technical answer into natural Japanese. "
         "Preserve the full meaning; keep technical terms accurate. "
-        "Output only Japanese text, with no English preamble or labels.\n\n"
+        "IMPORTANT: Preserve any [Image X] citation markers (e.g., [Image 1], [Image 2]) EXACTLY as written — do not translate or remove them. "
+        "Output only Japanese text with the preserved [Image X] markers, with no English preamble or labels.\n\n"
         f"English answer:\n{english_answer}\n\nJapanese answer:"
     )
     out = get_gemini_response(
@@ -948,6 +951,9 @@ def api_query(payload: QueryRequest):
     if not isinstance(answer, str):
         answer = str(answer)
 
+    # Only return images actually cited; renumber citations to match filtered order
+    image_matches, answer = _filter_images_by_citations(image_matches, answer)
+
     texts_norm = _normalize_text_matches(text_matches)
     images_norm = _normalize_image_matches(image_matches, manual.manual_id)
 
@@ -1025,7 +1031,10 @@ def api_query_myanmar(payload: MyanmarQueryRequest):
             status_code=503,
         )
 
-    myanmar_answer = _english_answer_to_myanmar(rag, english_answer)
+    # Filter images to only those cited in the English answer, then renumber
+    image_matches, renumbered_english = _filter_images_by_citations(image_matches, english_answer)
+
+    myanmar_answer = _english_answer_to_myanmar(rag, renumbered_english)
     if not myanmar_answer or myanmar_answer == "Exception occurred":
         return JSONResponse(
             {"detail": "Failed to translate answer to Myanmar. Try again or check Vertex AI / Gemini."},
@@ -1040,7 +1049,7 @@ def api_query_myanmar(payload: MyanmarQueryRequest):
         texts=[TextChunk(**t) for t in texts_norm],
         images=[ImageMatch(**img) for img in images_norm],
         english_query=english_query if payload.include_intermediate_english else None,
-        english_answer=english_answer if payload.include_intermediate_english else None,
+        english_answer=renumbered_english if payload.include_intermediate_english else None,
         manual_id=manual.manual_id,
     )
 
@@ -1105,7 +1114,10 @@ def api_query_japanese(payload: JapaneseQueryRequest):
             status_code=503,
         )
 
-    japanese_answer = _english_answer_to_japanese(rag, english_answer)
+    # Filter images to only those cited in the English answer, then renumber
+    image_matches, renumbered_english = _filter_images_by_citations(image_matches, english_answer)
+
+    japanese_answer = _english_answer_to_japanese(rag, renumbered_english)
     if not japanese_answer or japanese_answer == "Exception occurred":
         return JSONResponse(
             {"detail": "Failed to translate answer to Japanese. Try again or check Vertex AI / Gemini."},
@@ -1120,7 +1132,7 @@ def api_query_japanese(payload: JapaneseQueryRequest):
         texts=[TextChunk(**t) for t in texts_norm],
         images=[ImageMatch(**img) for img in images_norm],
         english_query=english_query if payload.include_intermediate_english else None,
-        english_answer=english_answer if payload.include_intermediate_english else None,
+        english_answer=renumbered_english if payload.include_intermediate_english else None,
         manual_id=manual.manual_id,
     )
 
@@ -1575,6 +1587,8 @@ def query(
         answer = out["response"]
         if not isinstance(answer, str):
             answer = str(answer)
+        # Only show images actually cited; renumber citations to match filtered order
+        image_matches, answer = _filter_images_by_citations(image_matches, answer)
 
     html = _render_page(
         ran=True,
@@ -1601,7 +1615,6 @@ def chat_page():
 
 def _condense_conversational_query(rag, question: str, history: List[ChatMessage]) -> str:
     """Rewrite follow-up question to a standalone search query containing context."""
-    import re
     if not history:
         # Detect Japanese characters (Hiragana, Katakana, Kanji)
         if re.search(r"[\u3040-\u309f\u30a0-\u30ff\u4e00-\u9faf]", question):
@@ -1641,6 +1654,59 @@ def _condense_conversational_query(rag, question: str, history: List[ChatMessage
     return res
 
 
+def _needs_retrieval(rag, condensed_query: str, history: List[ChatMessage]) -> bool:
+    """Return False when conversation history already contains enough context to answer."""
+    if not history:
+        return True
+    history_str = "\n".join(
+        f"{'Farmer' if m.role == 'user' else 'Assistant'}: {m.content}"
+        for m in history[-4:]
+    )
+    prompt = (
+        "Given this conversation history, determine if answering the new question "
+        "requires looking up NEW information from a technical manual database, "
+        "or if the conversation history already contains enough context.\n\n"
+        f"Conversation History:\n{history_str}\n\n"
+        f"New Question: {condensed_query}\n\n"
+        "Answer with ONLY 'yes' (need manual lookup) or 'no' (history is sufficient):"
+    )
+    out = get_gemini_response(
+        rag.text_model,
+        model_input=prompt,
+        stream=False,
+        generation_config=GenerationConfig(temperature=0.0, max_output_tokens=4),
+    )
+    return "yes" in (out or "yes").strip().lower()
+
+
+def _filter_images_by_citations(image_matches: dict, answer: str):
+    """Return (filtered_image_matches, renumbered_answer).
+
+    Keeps only images cited as [Image X] in the answer, then rewrites those
+    citations to sequential 1-based numbers matching the filtered list order.
+    Uses a permissive pattern to match [Image 5], [Image: 5], [image5], etc.
+    """
+    cited_positions = {int(i) - 1 for i in re.findall(r'\[image[:#\s]*(\d+)\]', answer, re.IGNORECASE)}
+    if not cited_positions:
+        return {}, answer
+
+    filtered = {k: v for i, (k, v) in enumerate(image_matches.items()) if i in cited_positions}
+
+    # Map original 1-based index → new sequential 1-based index
+    orig_to_new: dict = {}
+    new_idx = 1
+    for i in range(len(image_matches)):
+        if i in cited_positions:
+            orig_to_new[i + 1] = new_idx
+            new_idx += 1
+
+    def _replace(m):
+        return f'[Image {orig_to_new.get(int(m.group(1)), int(m.group(1)))}]'
+
+    renumbered_answer = re.sub(r'\[image[:#\s]*(\d+)\]', _replace, answer, flags=re.IGNORECASE)
+    return filtered, renumbered_answer
+
+
 @app.post("/api/chat", response_model=ChatResponse)
 def api_chat(payload: ChatRequest):
     """Multi-turn conversational RAG backend endpoint."""
@@ -1655,9 +1721,13 @@ def api_chat(payload: ChatRequest):
     # 1. Condense/Rewrite follow-up query using history
     search_query = _condense_conversational_query(rag, payload.question, payload.history)
     
-    # 2. Retrieve resources using condensed query
-    text_matches = rag.search_text(search_query, top_n=payload.top_k_text, chunk_text=True)
-    image_matches = rag.search_images_by_description_text(search_query, top_n=payload.top_k_img)
+    # 2. Retrieve only when history doesn't already cover the question
+    if _needs_retrieval(rag, search_query, payload.history):
+        text_matches = rag.search_text(search_query, top_n=payload.top_k_text, chunk_text=True)
+        image_matches = rag.search_images_by_description_text(search_query, top_n=payload.top_k_img)
+    else:
+        text_matches = {}
+        image_matches = {}
     
     # 3. Format conversational prompt context
     context_str = ""
@@ -1712,6 +1782,9 @@ def api_chat(payload: ChatRequest):
         generation_config=GenerationConfig(temperature=payload.temp, max_output_tokens=1024),
     )
     answer = (out or "").strip()
+
+    # Only return images actually cited; renumber citations to match filtered order
+    image_matches, answer = _filter_images_by_citations(image_matches, answer)
 
     # Normalize responses
     texts_norm = _normalize_text_matches(text_matches)
