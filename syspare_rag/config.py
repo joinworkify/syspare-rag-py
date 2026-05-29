@@ -119,7 +119,9 @@ class ManualConfig:
 class ManualRegistry:
     """In-memory registry of all available manuals."""
 
-    def __init__(self, manuals: List[ManualConfig], default_id: Optional[str] = None) -> None:
+    def __init__(
+        self, manuals: List[ManualConfig], default_id: Optional[str] = None
+    ) -> None:
         if not manuals:
             raise ValueError("ManualRegistry requires at least one ManualConfig")
         self._manuals: Dict[str, ManualConfig] = {m.manual_id: m for m in manuals}
@@ -169,6 +171,33 @@ _DEFAULT_MANUALS = [
         "image_dir": "manuals/YM358_service/cache/images",
         "ocr_lang": "eng",
         "description": "Scanned service/repair manual; requires OCR for most pages.",
+    },
+    {
+        "manual_id": "AW82_service",
+        "display_name": "AW82 Service Manual",
+        "pdf_folder": "manuals/AW82_service/pdf",
+        "cache_dir": "manuals/AW82_service/cache",
+        "image_dir": "manuals/AW82_service/cache/images",
+        "ocr_lang": "eng",
+        "description": "Service manual for AW82.",
+    },
+    {
+        "manual_id": "YHCH_service",
+        "display_name": "YHCH Service Manual",
+        "pdf_folder": "manuals/YHCH_service/pdf",
+        "cache_dir": "manuals/YHCH_service/cache",
+        "image_dir": "manuals/YHCH_service/cache/images",
+        "ocr_lang": "eng",
+        "description": "Service manual for YHCH.",
+    },
+    {
+        "manual_id": "YH_operation",
+        "display_name": "YH Operation Manual",
+        "pdf_folder": "manuals/YH_operation/pdf",
+        "cache_dir": "manuals/YH_operation/cache",
+        "image_dir": "manuals/YH_operation/cache/images",
+        "ocr_lang": "eng",
+        "description": "Operator-facing manual for YH",
     },
 ]
 

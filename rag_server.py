@@ -303,10 +303,14 @@ def _get_rag(manual_id: Optional[str] = None) -> MultimodalRAGPipeline:
                     image_save_dir=manual.image_dir,
                 )
                 _upload_images_to_s3_and_rewrite(rag_instance, manual)
+                print(f"[{mid}] Syncing cache to S3...")
                 _sync_to_s3(manual)
+                print(f"[{mid}] S3 sync done.")
             else:
                 print(f"[{mid}] Metadata cache loaded from disk.")
+            print(f"[{mid}] Remapping image paths...")
             _remap_image_paths(rag_instance, manual)
+            print(f"[{mid}] Pipeline ready.")
             _pipelines[mid] = rag_instance
             return rag_instance
         except Exception as e:
@@ -1745,22 +1749,36 @@ def get_available_models(manual_id: Optional[str] = None):
     try:
         manual = _resolve_manual(manual_id)
         rag = _get_rag(manual.manual_id)
-        if rag.text_metadata_df is not None:
-            files = list(rag.text_metadata_df["file_name"].unique())
-            models = []
-            for f in files:
-                name_without_ext = os.path.splitext(f)[0]
-                models.append({
-                    "id": f,
-                    "name": name_without_ext.upper()
-                })
-            return {"manual_id": manual.manual_id, "models": models}
+        df = rag.text_metadata_df
+        if df is not None and not df.empty:
+            doc_col = next(
+                (c for c in ["file_name", "doc_name", "source"] if c in df.columns), None
+            )
+            if doc_col:
+                files = list(df[doc_col].dropna().unique())
+                models = [
+                    {"id": f, "name": os.path.splitext(f)[0].upper()}
+                    for f in files
+                ]
+                return {"manual_id": manual.manual_id, "models": models}
     except Exception as e:
         print(f"Error fetching models from cache: {e}")
-    # Fallback to defaults if cache is not loaded yet
+    # Fallback: scan PDF folder for actual files
+    try:
+        resolved = _resolve_manual(manual_id)
+        pdf_files = sorted(Path(resolved.pdf_folder).glob("*.pdf"))
+        if pdf_files:
+            return {
+                "manual_id": resolved.manual_id,
+                "models": [
+                    {"id": f.name, "name": f.stem.upper()} for f in pdf_files
+                ],
+            }
+    except Exception:
+        pass
     return {
         "manual_id": (manual_id or DEFAULT_MANUAL_ID),
-        "models": [{"id": "ym358a.pdf", "name": "YM358A"}],
+        "models": [],
     }
 
 
@@ -1864,8 +1882,8 @@ def api_generate_random_question(payload: GenerateQuestionRequest):
         for c in chunks_to_use:
             c_text = c.get("chunk_text") or c.get("text") or ""
             merged_texts.append(c_text.strip())
-            p = int(c.get("page_num", 0))
-            chnk = int(c.get("chunk_number", 0))
+            p = int(c.get("page_num") or 0)
+            chnk = int(c.get("chunk_number") or 0)
             if p not in page_nums:
                 page_nums.append(p)
             if chnk not in chunk_numbers:

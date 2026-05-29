@@ -34,4 +34,14 @@ pull-s3-operation:
 test:
 	uv run pytest
 
-.PHONY: dev serve install build-cache build-cache-operation build-cache-skip-images build-cache-skip-images-operation sync-s3 pull-s3 pull-s3-operation test
+# Usage: make add-manual MANUAL=AW82_service
+# Options: MANUAL_NAME="AW82 Service" MANUAL_LANG=eng MANUAL_DESC="..."
+# Add --build flag to also trigger index build (server must be running)
+add-manual:
+	uv run python scripts/add_manual.py $(MANUAL) \
+		$(if $(MANUAL_NAME),--name "$(MANUAL_NAME)") \
+		$(if $(MANUAL_LANG),--lang $(MANUAL_LANG)) \
+		$(if $(MANUAL_DESC),--desc "$(MANUAL_DESC)") \
+		$(if $(BUILD),--build --port $(PORT))
+
+.PHONY: dev serve install build-cache build-cache-operation build-cache-skip-images build-cache-skip-images-operation sync-s3 pull-s3 pull-s3-operation test add-manual
