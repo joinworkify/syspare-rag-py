@@ -930,15 +930,6 @@ def api_query(payload: QueryRequest):
             status_code=503,
         )
 
-    text_matches = rag.search_text(
-        payload.question,
-        top_n=payload.top_k_text,
-        chunk_text=True,
-    )
-    image_matches = rag.search_images_by_description_text(
-        payload.question,
-        top_n=payload.top_k_img,
-    )
     out = rag.answer_multimodal_query(
         payload.question,
         top_n_text=payload.top_k_text,
@@ -952,8 +943,9 @@ def api_query(payload: QueryRequest):
     if not isinstance(answer, str):
         answer = str(answer)
 
-    texts_norm = _normalize_text_matches(text_matches)
-    images_norm = _normalize_image_matches(image_matches, manual.manual_id)
+    # Reuse the expanded matches already computed inside answer_multimodal_query
+    texts_norm = _normalize_text_matches(out["text_matches"])
+    images_norm = _normalize_image_matches(out["image_matches"], manual.manual_id)
 
     return QueryResponse(
         answer=answer,
@@ -1001,15 +993,6 @@ def api_query_myanmar(payload: MyanmarQueryRequest):
             status_code=503,
         )
 
-    text_matches = rag.search_text(
-        english_query,
-        top_n=payload.top_k_text,
-        chunk_text=True,
-    )
-    image_matches = rag.search_images_by_description_text(
-        english_query,
-        top_n=payload.top_k_img,
-    )
     out = rag.answer_multimodal_query(
         english_query,
         top_n_text=payload.top_k_text,
@@ -1036,8 +1019,8 @@ def api_query_myanmar(payload: MyanmarQueryRequest):
             status_code=503,
         )
 
-    texts_norm = _normalize_text_matches(text_matches)
-    images_norm = _normalize_image_matches(image_matches, manual.manual_id)
+    texts_norm = _normalize_text_matches(out["text_matches"])
+    images_norm = _normalize_image_matches(out["image_matches"], manual.manual_id)
 
     return MyanmarQueryResponse(
         answer=myanmar_answer,
@@ -1081,15 +1064,6 @@ def api_query_japanese(payload: JapaneseQueryRequest):
             status_code=503,
         )
 
-    text_matches = rag.search_text(
-        english_query,
-        top_n=payload.top_k_text,
-        chunk_text=True,
-    )
-    image_matches = rag.search_images_by_description_text(
-        english_query,
-        top_n=payload.top_k_img,
-    )
     out = rag.answer_multimodal_query(
         english_query,
         top_n_text=payload.top_k_text,
@@ -1116,8 +1090,8 @@ def api_query_japanese(payload: JapaneseQueryRequest):
             status_code=503,
         )
 
-    texts_norm = _normalize_text_matches(text_matches)
-    images_norm = _normalize_image_matches(image_matches, manual.manual_id)
+    texts_norm = _normalize_text_matches(out["text_matches"])
+    images_norm = _normalize_image_matches(out["image_matches"], manual.manual_id)
 
     return JapaneseQueryResponse(
         answer=japanese_answer,

@@ -567,6 +567,35 @@ class MultimodalRAGPipeline:
     # -----------------------------
     # Retrieval
     # -----------------------------
+    def _expand_query(self, query: str, n_variants: int = 2) -> List[str]:
+        """
+        Use Gemini to generate alternative phrasings of the query using technical
+        synonyms that are more likely to appear in service manuals.
+        Falls back to [query] on any error.
+        """
+        instruction = (
+            "You are a technical query expander for agricultural machinery service manuals.\n"
+            f"Given the user question, generate exactly {n_variants} alternative phrasings "
+            "that use different technical synonyms or related terms that might appear in a service manual.\n"
+            "Rules:\n"
+            "- Replace colloquial terms with technical equivalents "
+            "(e.g. 'water in oil' → 'oil separation at low temperature', 'oil discoloration')\n"
+            "- Focus on vocabulary found in maintenance/inspection sections of service manuals\n"
+            f"- Output ONLY the {n_variants} alternative questions, one per line, no numbering, no explanation\n\n"
+            f"User question: {query}\n"
+            "Alternatives:"
+        )
+        response = get_gemini_response(
+            self.text_model,
+            model_input=instruction,
+            stream=False,
+            generation_config=GenerationConfig(temperature=0.3, max_output_tokens=256),
+        )
+        if not response or response == "Exception occurred":
+            return [query]
+        variants = [line.strip() for line in response.strip().splitlines() if line.strip()]
+        return [query] + variants[:n_variants]
+
     def search_text(
         self,
         query: str,
@@ -586,6 +615,116 @@ class MultimodalRAGPipeline:
             top_n=top_n,
             chunk_text=chunk_text,
         )
+
+    def _rerank_chunks(
+        self,
+        query: str,
+        candidates: List[Dict[str, Any]],
+        top_n: int,
+    ) -> List[Dict[str, Any]]:
+        """
+        Use Gemini to score each candidate chunk against the query (0-10).
+        Returns top_n chunks sorted by Gemini relevance score.
+        Falls back to cosine-score order if parsing fails.
+        """
+        if len(candidates) <= top_n:
+            return candidates
+
+        snippet_lines = []
+        for i, v in enumerate(candidates):
+            text = (v.get("chunk_text") or "").strip()[:400]
+            snippet_lines.append(f"[{i + 1}] {text}")
+
+        instruction = (
+            "You are a relevance ranker for agricultural machinery service manual sections.\n"
+            f"User question: {query}\n\n"
+            "Rate each numbered section for how directly it answers the question. "
+            "Score 0 (irrelevant) to 10 (directly answers).\n"
+            "Output ONLY lines in the format: index:score  (e.g. 3:9)\n"
+            "One line per section, nothing else.\n\n"
+            + "\n\n".join(snippet_lines)
+        )
+        response = get_gemini_response(
+            self.text_model,
+            model_input=instruction,
+            stream=False,
+            generation_config=GenerationConfig(temperature=0.1, max_output_tokens=512),
+        )
+
+        scores: Dict[int, float] = {}
+        for line in (response or "").strip().splitlines():
+            try:
+                parts = line.strip().split(":")
+                idx = int(parts[0].strip()) - 1  # 0-indexed
+                score = float(parts[1].strip())
+                scores[idx] = score
+            except Exception:
+                pass
+
+        def sort_key(i: int) -> float:
+            if i in scores:
+                return scores[i]
+            return candidates[i].get("cosine_score", 0.0)
+
+        sorted_indices = sorted(range(len(candidates)), key=sort_key, reverse=True)
+        return [candidates[i] for i in sorted_indices[:top_n]]
+
+    def search_text_multi(
+        self,
+        query: str,
+        *,
+        top_n: int = 5,
+        column_name: str = "text_embedding_chunk",
+        chunk_text: bool = True,
+        n_variants: int = 2,
+        rerank: bool = True,
+        retrieval_multiplier: int = 4,
+    ) -> Dict[int, Dict[str, Any]]:
+        """
+        Multi-query retrieval with Gemini reranking.
+
+        1. Expands query into n_variants alternatives.
+        2. For each variant retrieves top_n * retrieval_multiplier candidates.
+        3. Merges by chunk identity keeping max cosine score.
+        4. Reranks the merged pool with Gemini, returns global top_n.
+        """
+        if not self.has_metadata:
+            raise RuntimeError("Run build_metadata() first.")
+        if self.text_metadata_df is None or self.text_metadata_df.empty:
+            return {}
+
+        expanded = self._expand_query(query, n_variants=n_variants)
+        pool_size = top_n * retrieval_multiplier
+
+        seen: Dict[tuple, Dict[str, Any]] = {}
+        for q in expanded:
+            matches = get_similar_text_from_query(
+                q,
+                self.text_metadata_df,  # type: ignore
+                column_name=column_name,
+                top_n=pool_size,
+                chunk_text=chunk_text,
+            )
+            for value in matches.values():
+                key = (
+                    value.get("file_name", ""),
+                    value.get("page_num", 0),
+                    value.get("chunk_number"),
+                )
+                score = value.get("cosine_score", 0.0)
+                if key not in seen or score > seen[key].get("cosine_score", 0.0):
+                    seen[key] = value
+
+        candidates = sorted(
+            seen.values(), key=lambda x: x.get("cosine_score", 0.0), reverse=True
+        )
+
+        if rerank and len(candidates) > top_n:
+            candidates = self._rerank_chunks(query, candidates, top_n)
+        else:
+            candidates = candidates[:top_n]
+
+        return {i: v for i, v in enumerate(candidates)}
 
     def search_images_by_description_text(
         self,
@@ -752,7 +891,7 @@ class MultimodalRAGPipeline:
         include_step_by_step: bool = True,
         answer_language: str = "auto",
     ) -> Dict[str, Any]:
-        text_matches = self.search_text(query, top_n=top_n_text, chunk_text=True)
+        text_matches = self.search_text_multi(query, top_n=top_n_text, chunk_text=True)
         image_matches = self.search_images_by_description_text(
             query, top_n=top_n_images
         )
@@ -780,13 +919,15 @@ class MultimodalRAGPipeline:
         )
 
         prompt = (
-            "Instructions: Compare the images and the text provided as Context: to answer multiple Question:\n"
+            "Instructions: Answer the question using ONLY the information in the Context below. "
+            "Do not use external knowledge. "
+            "If the answer is not present in the provided context, respond: "
+            "\"The information is not available in the provided manual sections.\"\n"
             "CRITICAL CITATION RULE: When answering, if you use or reference information from a specific image to support your explanation, "
             "you MUST cite it inline using the format [Image X] where X is the image index number (e.g. [Image 1], [Image 2]). "
             "Always include these inline references if you rely on details or visual elements from the images.\n\n"
             f"{lang_line}"
             f"{reasoning_line}"
-            # 'If unsure, respond, "Not enough context to answer".\n\n'
             "Context:\n"
             " - Text Context:\n"
             f"{final_context_text}\n"

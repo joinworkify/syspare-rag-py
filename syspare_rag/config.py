@@ -199,6 +199,15 @@ _DEFAULT_MANUALS = [
         "ocr_lang": "eng",
         "description": "Operator-facing manual for YH",
     },
+    {
+        "manual_id": "EF514T_manual",
+        "display_name": "Ef514T Manual",
+        "pdf_folder": "manuals/EF514T_manual/pdf",
+        "cache_dir": "manuals/EF514T_manual/cache",
+        "image_dir": "manuals/EF514T_manual/cache/images",
+        "ocr_lang": "eng",
+        "description": "",
+    },
 ]
 
 
