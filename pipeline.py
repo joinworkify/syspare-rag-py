@@ -19,6 +19,8 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from tqdm import tqdm
+
 import numpy as np
 import pandas as pd
 import pymupdf as fitz  # pymupdf
@@ -309,80 +311,88 @@ class MultimodalRAGPipeline:
         if not self.config.enable_ocr_fallback:
             return text_df
 
-        doc_col = self._infer_doc_col(text_df)
-        page_col = self._infer_page_col(text_df)
-        chunk_col = self._infer_chunk_text_col(text_df)
-        emb_col = self._infer_embedding_col(text_df)
+        df_empty = text_df.empty or len(text_df.columns) == 0
 
-        if doc_col is None or page_col is None:
-            # Can't reliably map pages -> don't OCR automatically
-            return text_df
-        if chunk_col is None or emb_col is None:
-            return text_df
+        doc_col = self._infer_doc_col(text_df) or "file_name"
+        page_col = self._infer_page_col(text_df) or "page_num"
+        chunk_col = self._infer_chunk_text_col(text_df) or "chunk_text"
+        emb_col = self._infer_embedding_col(text_df) or "text_embedding_chunk"
 
         # Build "how much text do we already have per (doc,page)"
-        grp = (
-            text_df.groupby([doc_col, page_col])[chunk_col]
-            .apply(lambda s: sum(len(str(x)) for x in s))
-            .to_dict()
-        )
+        # Skip groupby when df is empty — all pages need OCR
+        if df_empty:
+            grp: dict = {}
+        else:
+            grp = (
+                text_df.groupby([doc_col, page_col])[chunk_col]
+                .apply(lambda s: sum(len(str(x)) for x in s))
+                .to_dict()
+            )
 
         new_rows: List[Dict[str, Any]] = []
 
-        for pdf_path in self._pdf_paths(pdf_folder_path):
-            doc = fitz.open(str(pdf_path))
-            doc_name = pdf_path.name
+        pdf_paths = list(self._pdf_paths(pdf_folder_path))
+        total_pages = sum(fitz.open(str(p)).page_count for p in pdf_paths)
 
-            for i in range(doc.page_count):
-                page_num = i + 1
-                existing_chars = grp.get((doc_name, page_num), 0)
+        with tqdm(total=total_pages, desc="OCR fallback", unit="pg") as pbar:
+            for pdf_path in pdf_paths:
+                doc = fitz.open(str(pdf_path))
+                doc_name = pdf_path.name
 
-                # Only OCR if existing extracted text is "too short"
-                if existing_chars >= self.config.ocr_min_chars:
-                    continue
+                for i in range(doc.page_count):
+                    page_num = i + 1
+                    existing_chars = grp.get((doc_name, page_num), 0)
 
-                page = doc.load_page(i)
-                base_text = (page.get_text("text") or "").strip()
+                    if existing_chars >= self.config.ocr_min_chars:
+                        pbar.update(1)
+                        continue
 
-                # if page.get_text already has enough but df didn't capture it, skip OCR
-                if len(base_text) >= self.config.ocr_min_chars:
-                    continue
+                    page = doc.load_page(i)
+                    base_text = (page.get_text("text") or "").strip()
 
-                ocr_text = self._ocr_page(page)
-                if len(ocr_text) < self.config.ocr_min_chars:
-                    continue
+                    if len(base_text) >= self.config.ocr_min_chars:
+                        pbar.update(1)
+                        continue
 
-                ocr_chunks = self._chunk_text_simple(
-                    ocr_text,
-                    chunk_chars=self.config.ocr_chunk_chars,
-                    overlap=self.config.ocr_chunk_overlap,
-                )
+                    ocr_text = self._ocr_page(page)
+                    if len(ocr_text) < self.config.ocr_min_chars:
+                        pbar.update(1)
+                        continue
 
-                for cid, ch in enumerate(ocr_chunks):
-                    new_rows.append(
-                        {
-                            doc_col: doc_name,
-                            page_col: page_num,
-                            chunk_col: ch,
-                            emb_col: self._embed_text(ch),
-                            "extraction_method": "ocr",
-                            "pdf_path": str(pdf_path),
-                            "chunk_id": f"ocr_{page_num}_{cid}",
-                        }
+                    ocr_chunks = self._chunk_text_simple(
+                        ocr_text,
+                        chunk_chars=self.config.ocr_chunk_chars,
+                        overlap=self.config.ocr_chunk_overlap,
                     )
 
-            doc.close()
+                    for cid, ch in enumerate(ocr_chunks):
+                        new_rows.append(
+                            {
+                                doc_col: doc_name,
+                                page_col: page_num,
+                                chunk_col: ch,
+                                emb_col: self._embed_text(ch),
+                                "extraction_method": "ocr",
+                                "pdf_path": str(pdf_path),
+                                "chunk_id": f"ocr_{page_num}_{cid}",
+                            }
+                        )
+
+                    pbar.update(1)
+
+                doc.close()
 
         if not new_rows:
             return text_df
 
         add_df = pd.DataFrame(new_rows)
 
-        # Ensure all columns exist
-        for c in text_df.columns:
-            if c not in add_df.columns:
-                add_df[c] = None
-        add_df = add_df[text_df.columns]  # match column order
+        if not df_empty:
+            # Align columns to existing df schema
+            for c in text_df.columns:
+                if c not in add_df.columns:
+                    add_df[c] = None
+            add_df = add_df[text_df.columns]
 
         out = pd.concat([text_df, add_df], ignore_index=True)
         return out
@@ -548,7 +558,9 @@ class MultimodalRAGPipeline:
         self._validate_loaded_cache()
 
         if cache_dir:
+            print(f"Saving cache to {cache_dir} ...")
             self.save_cache(cache_dir)
+            print("Cache saved.")
 
         return text_df, image_df
 
@@ -565,6 +577,8 @@ class MultimodalRAGPipeline:
     ) -> Dict[Any, Dict[str, Any]]:
         if not self.has_metadata:
             raise RuntimeError("Run build_metadata() first.")
+        if self.text_metadata_df is None or self.text_metadata_df.empty:
+            return {}
         return get_similar_text_from_query(
             query,
             self.text_metadata_df,  # type: ignore
@@ -583,6 +597,8 @@ class MultimodalRAGPipeline:
     ) -> Dict[Any, Dict[str, Any]]:
         if not self.has_metadata:
             raise RuntimeError("Run build_metadata() first.")
+        if self.image_metadata_df is None or self.image_metadata_df.empty:
+            return {}
         embedding_size = embedding_size or self.config.embedding_size
         return get_similar_image_from_query(
             self.text_metadata_df,  # type: ignore

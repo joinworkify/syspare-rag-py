@@ -362,6 +362,8 @@ def get_image_for_gemini(
         pix = fitz.Pixmap(doc, xref)
 
         # Normalize color space for consistent JPEG encoding
+        if pix.colorspace is None:
+            return None, None
         if pix.colorspace not in (fitz.csGRAY, fitz.csRGB, fitz.csCMYK):
             pix = fitz.Pixmap(fitz.csRGB, pix)
 
@@ -1043,21 +1045,30 @@ def get_similar_image_from_query(
             "page_num"
         ]
 
-        page_text_series = text_metadata_df[
-            (
-                text_metadata_df["page_num"].isin(
-                    [final_images[matched_imageno]["page_num"]]
+        if (
+            text_metadata_df is not None
+            and not text_metadata_df.empty
+            and "page_num" in text_metadata_df.columns
+            and "file_name" in text_metadata_df.columns
+            and "text" in text_metadata_df.columns
+        ):
+            page_text_series = text_metadata_df[
+                (
+                    text_metadata_df["page_num"].isin(
+                        [final_images[matched_imageno]["page_num"]]
+                    )
                 )
-            )
-            & (
-                text_metadata_df["file_name"].isin(
-                    [final_images[matched_imageno]["file_name"]]
+                & (
+                    text_metadata_df["file_name"].isin(
+                        [final_images[matched_imageno]["file_name"]]
+                    )
                 )
+            ]["text"].dropna()
+            final_images[matched_imageno]["page_text"] = np.unique(
+                page_text_series.astype(str).values
             )
-        ]["text"].dropna()
-        final_images[matched_imageno]["page_text"] = np.unique(
-            page_text_series.astype(str).values
-        )
+        else:
+            final_images[matched_imageno]["page_text"] = np.array([])
 
         # Store image description
         final_images[matched_imageno]["image_description"] = image_metadata_df.iloc[
@@ -1134,32 +1145,25 @@ def get_similar_text_from_query(
         # Create a sub-dictionary for each matched text
         final_text[matched_textno] = {}
 
-        # Store page number
-        final_text[matched_textno]["file_name"] = text_metadata_df.iloc[index][
-            "file_name"
-        ]
-
-        # Store page number
-        final_text[matched_textno]["page_num"] = text_metadata_df.iloc[index][
-            "page_num"
-        ]
+        row = text_metadata_df.iloc[index]
+        final_text[matched_textno]["file_name"] = (
+            row.get("file_name") or row.get("doc_name") or row.get("source", "")
+        )
+        final_text[matched_textno]["page_num"] = row.get("page_num", 0)
 
         # Store cosine score
         final_text[matched_textno]["cosine_score"] = top_n_scores[matched_textno]
 
         if chunk_text:
-            # Store chunk number
-            final_text[matched_textno]["chunk_number"] = text_metadata_df.iloc[index][
-                "chunk_number"
-            ]
-
-            # Store chunk text
-            final_text[matched_textno]["chunk_text"] = text_metadata_df["chunk_text"][
-                index
-            ]
+            # chunk_number may be absent in OCR-only rows (use chunk_id fallback)
+            final_text[matched_textno]["chunk_number"] = row.get(
+                "chunk_number", row.get("chunk_id", 0)
+            )
+            # chunk_text column name is consistent across schemas
+            final_text[matched_textno]["chunk_text"] = row.get("chunk_text", "")
         else:
-            # Store page text
-            final_text[matched_textno]["text"] = text_metadata_df["text"][index]
+            # OCR rows have no separate "text" column; fall back to chunk_text
+            final_text[matched_textno]["text"] = row.get("text") or row.get("chunk_text", "")
 
     # Optionally print citations immediately
     if print_citation:
