@@ -321,14 +321,14 @@ def _get_rag(manual_id: Optional[str] = None) -> MultimodalRAGPipeline:
 
 @app.on_event("startup")
 def _ensure_rag():
-    """Optionally init the default pipeline at startup (fails gracefully)."""
+    """Optionally init all pipelines at startup (fails gracefully per manual)."""
     if INIT_RAG_ON_STARTUP != "1":
-        # Keep startup fast; RAG will be initialized lazily on first query/build-cache.
         return
-    try:
-        _get_rag(DEFAULT_MANUAL_ID)
-    except Exception as e:
-        print(f"RAG not ready at startup: {e}")
+    for manual in manual_registry.list():
+        try:
+            _get_rag(manual.manual_id)
+        except Exception as e:
+            print(f"[{manual.manual_id}] RAG not ready at startup: {e}")
 
 
 # -----------------------------
