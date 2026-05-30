@@ -71,6 +71,24 @@
           </h2>
 
           <div class="space-y-4">
+            <!-- Manual Selector -->
+            <div>
+              <label for="manual_id" class="block text-xs font-semibold text-slate-400 tracking-wider uppercase mb-2">
+                Manual
+              </label>
+              <div class="relative">
+                <select id="manual_id"
+                  class="w-full px-4 py-3 bg-slate-950 border border-slate-800 rounded-xl focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 outline-none transition text-slate-200 font-medium appearance-none cursor-pointer">
+                  <option value="">Loading…</option>
+                </select>
+                <div class="absolute inset-y-0 right-4 flex items-center pointer-events-none text-slate-500">
+                  <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+                  </svg>
+                </div>
+              </div>
+            </div>
+
             <!-- Model Selector -->
             <div>
               <label for="model_name" class="block text-xs font-semibold text-slate-400 tracking-wider uppercase mb-2">
@@ -368,6 +386,7 @@
       // Configuration
       var activeLang = 'en';
       var activeModel = 'ym358a.pdf';
+      var activeManualId = '';
       var lastGeneratedQuestion = '';
 
       // Batch State
@@ -383,6 +402,7 @@
       var ragSpinner = document.getElementById('rag-spinner');
       var ragIcon = document.getElementById('rag-icon');
 
+      var manualSelect = document.getElementById('manual_id');
       var modelSelect = document.getElementById('model_name');
       var langEn = document.getElementById('lang-en');
       var langMy = document.getElementById('lang-my');
@@ -412,8 +432,8 @@
       var ragImagesEmpty = document.getElementById('rag-images-empty');
       var ragChunksList = document.getElementById('rag-chunks-list');
 
-      // Setup models dynamically
-      fetchModels();
+      // Setup manuals then models dynamically
+      fetchManuals();
 
       function showStatus(msg) {
         if (!statusCard) return;
@@ -421,8 +441,28 @@
         statusText.textContent = msg;
       }
 
-      function fetchModels() {
-        fetch('/api/models')
+      function fetchManuals() {
+        fetch('/api/manuals', { headers: { 'Accept': 'application/json' } })
+          .then(function (r) { return r.json(); })
+          .then(function (data) {
+            var manuals = data.manuals || [];
+            manualSelect.innerHTML = '';
+            manuals.forEach(function (m) {
+              var opt = document.createElement('option');
+              opt.value = m.manual_id;
+              opt.textContent = m.manual_id;
+              if (m.manual_id === data.default_manual_id) opt.selected = true;
+              manualSelect.appendChild(opt);
+            });
+            activeManualId = manualSelect.value;
+            fetchModels(activeManualId);
+          })
+          .catch(function (err) { console.error('Failed to load manuals list', err); });
+      }
+
+      function fetchModels(manualId) {
+        var url = '/api/models' + (manualId ? '?manual_id=' + encodeURIComponent(manualId) : '');
+        fetch(url)
           .then(function (r) { return r.json(); })
           .then(function (data) {
             if (data.models && data.models.length) {
@@ -436,10 +476,13 @@
               activeModel = modelSelect.value;
             }
           })
-          .catch(function (err) {
-            console.error('Failed to load dynamic models list', err);
-          });
+          .catch(function (err) { console.error('Failed to load dynamic models list', err); });
       }
+
+      manualSelect.addEventListener('change', function () {
+        activeManualId = this.value;
+        fetchModels(activeManualId);
+      });
 
       // Language Switcher
       function setLanguage(lang) {
@@ -501,6 +544,7 @@
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
+            manual_id: activeManualId,
             model_name: activeModel,
             language: activeLang,
             count: parseInt(countSelect.value, 10)
@@ -583,6 +627,7 @@
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
+            manual_id: activeManualId,
             question: lastGeneratedQuestion,
             top_k_text: 5,
             top_k_img: 4,
