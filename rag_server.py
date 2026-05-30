@@ -321,14 +321,17 @@ def _get_rag(manual_id: Optional[str] = None) -> MultimodalRAGPipeline:
 
 @app.on_event("startup")
 def _ensure_rag():
-    """Optionally init all pipelines at startup (fails gracefully per manual)."""
+    """Warm up default pipeline in background so health checks pass immediately."""
     if INIT_RAG_ON_STARTUP != "1":
         return
-    for manual in manual_registry.list():
+
+    def _warmup():
         try:
-            _get_rag(manual.manual_id)
+            _get_rag(DEFAULT_MANUAL_ID)
         except Exception as e:
-            print(f"[{manual.manual_id}] RAG not ready at startup: {e}")
+            print(f"[{DEFAULT_MANUAL_ID}] RAG warmup failed: {e}")
+
+    threading.Thread(target=_warmup, daemon=True).start()
 
 
 # -----------------------------
