@@ -164,6 +164,10 @@
             class="inline-flex items-center px-4 py-2.5 rounded-xl bg-slate-950 border border-slate-800 text-slate-300 text-sm font-semibold hover:bg-slate-900 hover:text-white transition cursor-pointer">
             Upload to S3
           </button>
+          <button type="button" id="btn-pull-all-s3"
+            class="inline-flex items-center px-4 py-2.5 rounded-xl bg-slate-950 border border-indigo-500/40 text-indigo-300 text-sm font-semibold hover:bg-indigo-500/10 hover:text-indigo-200 transition cursor-pointer">
+            Pull All from S3
+          </button>
         </div>
         <p id="action-status" class="mt-3 text-xs text-slate-400 min-h-5 font-mono"></p>
       </div>
@@ -320,6 +324,35 @@
       document.getElementById('btn-sync-s3')?.addEventListener('click', function () {
         var manualId = document.getElementById('manual_id')?.value || '';
         postAction('/api/sync-to-s3?manual_id=' + encodeURIComponent(manualId), this);
+      });
+
+      document.getElementById('btn-pull-all-s3')?.addEventListener('click', async function () {
+        var btn = this;
+        btn.disabled = true;
+        btn.classList.add('opacity-50');
+        setStatus('Fetching manual list…');
+        try {
+          var r = await fetch('/api/manuals', { headers: { 'Accept': 'application/json' } });
+          var data = await r.json();
+          var manuals = data.manuals || [];
+          if (!manuals.length) { setStatus('No manuals found.', true); return; }
+          var total = manuals.length;
+          for (var i = 0; i < manuals.length; i++) {
+            var mid = manuals[i].manual_id;
+            setStatus('[' + (i + 1) + '/' + total + '] Pulling ' + mid + '…');
+            var pr = await fetch('/api/pull-from-s3?manual_id=' + encodeURIComponent(mid), {
+              method: 'POST', headers: { 'Accept': 'application/json' }
+            });
+            var pd = await pr.json();
+            if (!pr.ok) { setStatus('[' + (i + 1) + '/' + total + '] Failed ' + mid + ': ' + (pd.error || 'error'), true); break; }
+          }
+          setStatus('All ' + total + ' manuals pulled from S3.');
+        } catch (e) {
+          setStatus('Error: ' + e.message, true);
+        } finally {
+          btn.disabled = false;
+          btn.classList.remove('opacity-50');
+        }
       });
     })();
     

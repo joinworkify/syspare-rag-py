@@ -1,0 +1,56 @@
+[
+  {
+    "manual_id": "YM358_operation",
+    "display_name": "YM358 Operation Manual",
+    "pdf_folder": "manuals/YM358_operation/pdf",
+    "cache_dir": "manuals/YM358_operation/cache",
+    "image_dir": "manuals/YM358_operation/cache/images",
+    "ocr_lang": "eng",
+    "description": "Operator-facing manual for YM351R/YM358R tractors."
+  },
+  {
+    "manual_id": "YM358_service",
+    "display_name": "YM358 Service Manual",
+    "pdf_folder": "manuals/YM358_service/pdf",
+    "cache_dir": "manuals/YM358_service/cache",
+    "image_dir": "manuals/YM358_service/cache/images",
+    "ocr_lang": "eng",
+    "description": "Scanned service/repair manual; requires OCR for most pages."
+  },
+  {
+    "manual_id": "AW82_service",
+    "display_name": "AW82 Service Manual",
+    "pdf_folder": "manuals/AW82_service/pdf",
+    "cache_dir": "manuals/AW82_service/cache",
+    "image_dir": "manuals/AW82_service/cache/images",
+    "ocr_lang": "eng",
+    "description": "Service manual for AW82."
+  },
+  {
+    "manual_id": "YHCH_service",
+    "display_name": "YHCH Service Manual",
+    "pdf_folder": "manuals/YHCH_service/pdf",
+    "cache_dir": "manuals/YHCH_service/cache",
+    "image_dir": "manuals/YHCH_service/cache/images",
+    "ocr_lang": "eng",
+    "description": "Service manual for YHCH."
+  },
+  {
+    "manual_id": "YH_operation",
+    "display_name": "YH Operation Manual",
+    "pdf_folder": "manuals/YH_operation/pdf",
+    "cache_dir": "manuals/YH_operation/cache",
+    "image_dir": "manuals/YH_operation/cache/images",
+    "ocr_lang": "eng",
+    "description": "Operator-facing manual for YH"
+  },
+  {
+    "manual_id": "EF514T_Manual",
+    "display_name": "Ef514T Manual",
+    "pdf_folder": "manuals/EF514T_manual/pdf",
+    "cache_dir": "manuals/EF514T_manual/cache",
+    "image_dir": "manuals/EF514T_manual/cache/images",
+    "ocr_lang": "eng",
+    "description": ""
+  }
+]
