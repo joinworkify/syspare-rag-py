@@ -68,7 +68,7 @@
         class="w-80 bg-slate-950/90 border-r border-slate-900 flex flex-col h-full shrink-0 transition-all duration-300 relative z-20">
         <!-- Sidebar Header -->
         <div class="p-4 border-b border-slate-900 flex justify-between items-center">
-            <button onclick="startNewChat()"
+            <button id="new-chat-btn" onclick="startNewChat()"
                 class="flex-1 flex items-center justify-center gap-2 py-2 px-4 rounded-xl bg-emerald-950/40 border border-emerald-500/25 hover:border-emerald-500/55 hover:bg-emerald-950/60 text-emerald-400 text-sm font-semibold transition">
                 <span>➕</span> New Chat
             </button>
@@ -85,7 +85,7 @@
 
         <!-- Sidebar Footer -->
         <div class="p-4 border-t border-slate-900 space-y-2">
-            <button onclick="clearAllLogs()"
+            <button id="clear-logs-btn" onclick="clearAllLogs()"
                 class="w-full py-2 px-4 rounded-lg bg-slate-900 hover:bg-red-950/20 border border-slate-800 hover:border-red-900/30 text-slate-400 hover:text-red-400 text-xs font-medium transition flex items-center justify-center gap-2">
                 <span>🗑️</span> Clear Logs
             </button>
@@ -104,6 +104,17 @@
             title="Toggle Sidebar">
             <span>📂</span>
         </button>
+
+        <!-- Floating Language Switcher -->
+        <div class="absolute right-4 top-4 z-30">
+            <select id="lang-switcher" onchange="switchLanguage(this.value)"
+                class="rounded-xl border border-slate-800 bg-slate-900/80 hover:bg-slate-900/100 text-slate-300 font-semibold px-3 py-1.5 text-xs transition duration-200 focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500 cursor-pointer">
+                <option value="en">English</option>
+                <option value="my">Myanmar</option>
+                <option value="ja">Japanese</option>
+                <option value="zh">Chinese</option>
+            </select>
+        </div>
 
         <!-- Center: Interactive Chat Interface -->
         <section class="flex-1 flex flex-col h-full justify-between bg-slate-950 relative">
@@ -125,13 +136,12 @@
                             class="inline-flex p-3 rounded-2xl bg-emerald-950/40 border border-emerald-500/20 text-3xl text-emerald-400 animate-pulse">
                             🔧
                         </div>
-                        <h2
+                        <h2 id="welcome-title"
                             class="text-3xl font-extrabold tracking-tight bg-gradient-to-r from-emerald-400 via-teal-200 to-emerald-300 bg-clip-text text-transparent">
-                            Yanmar Tractor Service Assistant
+                            Yanmar Assistant
                         </h2>
-                        <p class="text-slate-400 max-w-md mx-auto text-sm leading-relaxed">
-                            A multi-turn conversational advisor trained on Yanmar service manuals. Describe your issue
-                            or symptom below.
+                        <p id="welcome-desc" class="text-slate-400 max-w-md mx-auto text-sm leading-relaxed">
+                            Ask a question or describe your tractor's symptoms below to get step-by-step diagnostic and repair guidance.
                         </p>
                     </div>
 
@@ -251,6 +261,48 @@
         let activeSessionId = null;
         let activeSessionTitle = "";
         let savedSessions = {};
+
+        const translations = {
+            en: {
+                welcomeTitle: "Yanmar Assistant",
+                welcomeDesc: "Ask a question or describe your tractor's symptoms below to get step-by-step diagnostic and repair guidance.",
+                newChat: "New Chat",
+                clearLogs: "Clear Logs"
+            },
+            my: {
+                welcomeTitle: "Yanmar အကူစနစ်",
+                welcomeDesc: "အောက်တွင် မေးခွန်းမေးမြန်းပါ သို့မဟုတ် ထွန်စက်၏ ချို့ယွင်းချက်ကို ဖော်ပြပြီး အဆင့်ဆင့် ပြုပြင်နည်း လမ်းညွှန်ချက်များကို ရယူပါ။",
+                newChat: "စကားဝိုင်းအသစ်",
+                clearLogs: "မှတ်တမ်းဖျက်ပါ"
+            },
+            ja: {
+                welcomeTitle: "ヤンマー アシスタント",
+                welcomeDesc: "トラクターの症状や質問を下記に入力すると、ステップバイステップで診断と修理のガイドを表示します。",
+                newChat: "新規チャット",
+                clearLogs: "履歴をクリア"
+            },
+            zh: {
+                welcomeTitle: "洋马 助手",
+                welcomeDesc: "在下方输入您拖拉机的问题或症状，即可获取逐步诊断和维修指南。",
+                newChat: "新聊天",
+                clearLogs: "清除日志"
+            }
+        };
+
+        function switchLanguage(lang) {
+            const t = translations[lang] || translations.en;
+            document.getElementById('welcome-title').innerText = t.welcomeTitle;
+            document.getElementById('welcome-desc').innerText = t.welcomeDesc;
+            
+            const newChatBtn = document.getElementById('new-chat-btn');
+            if (newChatBtn) {
+                newChatBtn.innerHTML = `<span>➕</span> ${t.newChat}`;
+            }
+            const clearLogsBtn = document.getElementById('clear-logs-btn');
+            if (clearLogsBtn) {
+                clearLogsBtn.innerHTML = `<span>🗑️</span> ${t.clearLogs}`;
+            }
+        }
 
         // DOM elements
         const chatForm = document.getElementById('chat-form');

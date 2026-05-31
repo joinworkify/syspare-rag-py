@@ -1723,17 +1723,14 @@ def _needs_retrieval(rag, condensed_query: str, history: List[ChatMessage]) -> b
 
 
 def _filter_images_by_citations(image_matches: dict, answer: str):
-    """Return (filtered_image_matches, renumbered_answer).
+    """Return (image_matches, renumbered_answer).
 
-    Keeps only images cited as [Image X] in the answer, then rewrites those
-    citations to sequential 1-based numbers matching the filtered list order.
-    Uses a permissive pattern to match [Image 5], [Image: 5], [image5], etc.
+    Keeps all images (does not filter them out), but still rewrites citations
+    in the answer text to be sequential based on the cited images.
     """
     cited_positions = {int(i) - 1 for i in re.findall(r'\[image[:#\s]*(\d+)\]', answer, re.IGNORECASE)}
     if not cited_positions:
-        return {}, answer
-
-    filtered = {k: v for i, (k, v) in enumerate(image_matches.items()) if i in cited_positions}
+        return image_matches, answer
 
     # Map original 1-based index → new sequential 1-based index
     orig_to_new: dict = {}
@@ -1747,7 +1744,7 @@ def _filter_images_by_citations(image_matches: dict, answer: str):
         return f'[Image {orig_to_new.get(int(m.group(1)), int(m.group(1)))}]'
 
     renumbered_answer = re.sub(r'\[image[:#\s]*(\d+)\]', _replace, answer, flags=re.IGNORECASE)
-    return filtered, renumbered_answer
+    return image_matches, renumbered_answer
 
 
 @app.post("/api/chat", response_model=ChatResponse)
