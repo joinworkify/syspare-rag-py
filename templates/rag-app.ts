@@ -23,12 +23,15 @@ interface QueryRequest {
   top_k_text?: number;
   top_k_img?: number;
   temp?: number;
+  answer_language?: string;
 }
 
 interface QueryResponse {
   answer: string;
   texts: TextChunk[];
   images: ImageMatch[];
+  retrieval_expanded?: boolean;
+  retrieval_message?: string | null;
 }
 
 function el(id: string): HTMLElement | null {
@@ -165,8 +168,18 @@ async function runQuery(): Promise<void> {
 
   runBtn.setAttribute('disabled', 'true');
   runBtn.classList.add('opacity-70');
-  statusEl.textContent = 'Running RAG…';
+  statusEl.textContent = 'Searching the selected manual…';
   statusEl.style.color = '#64748b';
+  const statusSteps = [
+    'Searching the selected manual…',
+    'Checking retrieved clips and diagrams…',
+    'If the first pass is dealer-only, searching wider…',
+  ];
+  let statusStepIndex = 0;
+  const statusTimer = window.setInterval(() => {
+    statusStepIndex = (statusStepIndex + 1) % statusSteps.length;
+    statusEl.textContent = statusSteps[statusStepIndex];
+  }, 1800);
   if (resultsEl) resultsEl.classList.add('hidden');
 
   try {
@@ -200,12 +213,20 @@ async function runQuery(): Promise<void> {
       return;
     }
 
+    if (data.retrieval_expanded) {
+      statusEl.textContent =
+        data.retrieval_message ??
+        'First pass had insufficient detail, so retrieval was expanded before answering.';
+      await new Promise((resolve) => setTimeout(resolve, 900));
+    }
+
     renderResults(data as QueryResponse);
     statusEl.textContent = '';
   } catch (err) {
     statusEl.textContent = err instanceof Error ? err.message : 'Request failed';
     statusEl.style.color = '#b91c1c';
   } finally {
+    window.clearInterval(statusTimer);
     runBtn.removeAttribute('disabled');
     runBtn.classList.remove('opacity-70');
   }

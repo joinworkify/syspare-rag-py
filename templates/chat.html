@@ -376,6 +376,18 @@
 
             // Injected Loader / Pulsing waiting state
             const loadingBubbleId = appendMessage('assistant', '', true);
+            const loadingSteps = [
+                'Searching the selected manual...',
+                'Checking retrieved clips and diagrams...',
+                'If the first pass is dealer-only, searching wider...'
+            ];
+            let loadingStepIndex = 0;
+            const loadingTimer = setInterval(() => {
+                const status = document.querySelector(`#${loadingBubbleId} .retry-status`);
+                if (!status) return;
+                loadingStepIndex = (loadingStepIndex + 1) % loadingSteps.length;
+                status.textContent = loadingSteps[loadingStepIndex];
+            }, 1800);
 
             try {
                 const response = await fetch('/api/chat', {
@@ -392,6 +404,14 @@
 
                 // Clear the loading indicator
                 const loadingBubble = document.getElementById(loadingBubbleId);
+                clearInterval(loadingTimer);
+                if (loadingBubble && data.retrieval_expanded) {
+                    const status = loadingBubble.querySelector('.retry-status');
+                    if (status) {
+                        status.textContent = 'First pass had insufficient detail. Searching wider manual context...';
+                    }
+                    await new Promise(resolve => setTimeout(resolve, 800));
+                }
                 if (loadingBubble) loadingBubble.remove();
 
                 // Append assistant's answer
@@ -407,6 +427,7 @@
                 saveSessionToStorage(activeSessionId, activeSessionTitle, chatHistory, data.texts, data.images);
 
             } catch (err) {
+                clearInterval(loadingTimer);
                 const loadingBubble = document.getElementById(loadingBubbleId);
                 if (loadingBubble) loadingBubble.remove();
                 appendMessage('assistant', 'Sorry, I failed to retrieve data from the diagnostic hub. Please check your cloud server or Vertex AI credentials.');
@@ -482,10 +503,13 @@
             if (isLoading) {
                 // Return pulsing loader inside assistant bubble
                 messageBody.innerHTML = `
-                    <div class="flex gap-1.5 items-center py-2 px-1">
-                        <div class="w-2 h-2 rounded-full bg-emerald-400 animate-bounce" style="animation-delay: 0s"></div>
-                        <div class="w-2 h-2 rounded-full bg-emerald-400 animate-bounce" style="animation-delay: 0.15s"></div>
-                        <div class="w-2 h-2 rounded-full bg-emerald-400 animate-bounce" style="animation-delay: 0.3s"></div>
+                    <div class="flex flex-col gap-2 py-2 px-1">
+                        <div class="flex gap-1.5 items-center">
+                            <div class="w-2 h-2 rounded-full bg-emerald-400 animate-bounce" style="animation-delay: 0s"></div>
+                            <div class="w-2 h-2 rounded-full bg-emerald-400 animate-bounce" style="animation-delay: 0.15s"></div>
+                            <div class="w-2 h-2 rounded-full bg-emerald-400 animate-bounce" style="animation-delay: 0.3s"></div>
+                        </div>
+                        <div class="retry-status text-xs text-slate-400 animate-pulse">Searching the selected manual...</div>
                     </div>
                 `;
             } else {
