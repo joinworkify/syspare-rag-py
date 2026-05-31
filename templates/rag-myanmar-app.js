@@ -172,8 +172,18 @@ async function runQuery() {
 
   runBtn.setAttribute('disabled', 'true');
   runBtn.classList.add('opacity-70');
-  statusEl.textContent = 'Running RAG… (first request can take 1-3 min while RAG loads)';
+  statusEl.textContent = 'Searching the selected manual…';
   statusEl.style.color = '#64748b';
+  const statusSteps = [
+    'Searching the selected manual…',
+    'Checking retrieved clips and diagrams…',
+    'If the first pass is dealer-only, searching wider…',
+  ];
+  let statusStepIndex = 0;
+  const statusTimer = setInterval(() => {
+    statusStepIndex = (statusStepIndex + 1) % statusSteps.length;
+    statusEl.textContent = statusSteps[statusStepIndex];
+  }, 1800);
   if (resultsEl) resultsEl.classList.add('hidden');
 
   try {
@@ -188,12 +198,19 @@ async function runQuery() {
       statusEl.style.color = '#b91c1c';
       return;
     }
+    if (data.retrieval_expanded) {
+      statusEl.textContent =
+        data.retrieval_message ??
+        'First pass had insufficient detail, so retrieval was expanded before answering.';
+      await new Promise((resolve) => setTimeout(resolve, 900));
+    }
     renderResults(data);
     statusEl.textContent = '';
   } catch (err) {
     statusEl.textContent = err instanceof Error ? err.message : 'Request failed';
     statusEl.style.color = '#b91c1c';
   } finally {
+    clearInterval(statusTimer);
     runBtn.removeAttribute('disabled');
     runBtn.classList.remove('opacity-70');
   }
