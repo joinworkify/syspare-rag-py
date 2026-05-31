@@ -137,11 +137,12 @@
                             🔧
                         </div>
                         <h2 id="welcome-title"
-                            class="text-3xl font-extrabold tracking-tight bg-gradient-to-r from-emerald-400 via-teal-200 to-emerald-300 bg-clip-text text-transparent">
+                            class="text-3xl font-extrabold tracking-tight bg-gradient-to-r from-emerald-500 via-teal-400 to-emerald-600 bg-clip-text text-transparent">
                             Yanmar Assistant
                         </h2>
                         <p id="welcome-desc" class="text-slate-400 max-w-md mx-auto text-sm leading-relaxed">
-                            Ask a question or describe your tractor's symptoms below to get step-by-step diagnostic and repair guidance.
+                            Ask a question or describe your tractor's symptoms below to get step-by-step diagnostic and
+                            repair guidance.
                         </p>
                     </div>
 
@@ -293,7 +294,7 @@
             const t = translations[lang] || translations.en;
             document.getElementById('welcome-title').innerText = t.welcomeTitle;
             document.getElementById('welcome-desc').innerText = t.welcomeDesc;
-            
+
             const newChatBtn = document.getElementById('new-chat-btn');
             if (newChatBtn) {
                 newChatBtn.innerHTML = `<span>➕</span> ${t.newChat}`;
