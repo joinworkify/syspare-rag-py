@@ -1,4 +1,5 @@
 # rag_server.py
+from collections import OrderedDict
 import os
 import re
 import shutil
@@ -55,12 +56,22 @@ def _env(key: str, default: str) -> str:
     return os.environ.get(key, default).strip()
 
 
+def _env_int(key: str, default: int) -> int:
+    value = _env(key, str(default))
+    try:
+        return int(value)
+    except ValueError:
+        print(f"Invalid {key}={value!r}; using {default}.")
+        return default
+
+
 PROJECT_ID = _env("PROJECT_ID", "fortunaii")
 LOCATION = _env("LOCATION", "us-central1")
 
 # Allow disabling S3 sync for local/dev (set DISABLE_S3_SYNC=1).
 DISABLE_S3_SYNC = _env("DISABLE_S3_SYNC", "0")
 INIT_RAG_ON_STARTUP = _env("INIT_RAG_ON_STARTUP", "0")
+RAG_PIPELINE_CACHE_SIZE = max(1, _env_int("RAG_PIPELINE_CACHE_SIZE", 1))
 
 # Manual registry: list of available manuals + default selection.
 manual_registry: ManualRegistry = load_manual_registry_from_env()
@@ -112,8 +123,9 @@ app.mount("/static", StaticFiles(directory=DEFAULT_MANUAL.image_dir), name="stat
 # -----------------------------
 # Per-manual pipeline cache (lazy)
 # -----------------------------
-_pipelines: Dict[str, MultimodalRAGPipeline] = {}
+_pipelines: OrderedDict[str, MultimodalRAGPipeline] = OrderedDict()
 _pipeline_errors: Dict[str, str] = {}
+_pipeline_cache_lock = threading.RLock()
 _pipeline_locks: Dict[str, threading.Lock] = {}
 _pipeline_locks_lock = threading.Lock()
 
@@ -123,6 +135,29 @@ def _get_pipeline_lock(manual_id: str) -> threading.Lock:
         if manual_id not in _pipeline_locks:
             _pipeline_locks[manual_id] = threading.Lock()
         return _pipeline_locks[manual_id]
+
+
+def _get_cached_pipeline(manual_id: str) -> Optional[MultimodalRAGPipeline]:
+    """Return cached pipeline and mark it most recently used."""
+    with _pipeline_cache_lock:
+        cached = _pipelines.get(manual_id)
+        if cached is not None:
+            _pipelines.move_to_end(manual_id)
+        return cached
+
+
+def _remember_pipeline(manual_id: str, rag: MultimodalRAGPipeline) -> None:
+    """Store a pipeline and evict least recently used manuals over the limit."""
+    with _pipeline_cache_lock:
+        _pipelines[manual_id] = rag
+        _pipelines.move_to_end(manual_id)
+
+        while len(_pipelines) > RAG_PIPELINE_CACHE_SIZE:
+            evicted_id, _ = _pipelines.popitem(last=False)
+            print(
+                f"[{evicted_id}] Evicted RAG pipeline from memory "
+                f"(RAG_PIPELINE_CACHE_SIZE={RAG_PIPELINE_CACHE_SIZE})."
+            )
 
 
 def _resolve_manual(manual_id: Optional[str]) -> ManualConfig:
@@ -168,12 +203,13 @@ def _sync_to_s3(manual: ManualConfig) -> Dict[str, int]:
 
 def _clear_rag_state(manual_id: Optional[str] = None) -> None:
     """Clear in-memory pipeline state for one manual (or all when None)."""
-    if manual_id is None:
-        _pipelines.clear()
-        _pipeline_errors.clear()
-        return
-    _pipelines.pop(manual_id, None)
-    _pipeline_errors.pop(manual_id, None)
+    with _pipeline_cache_lock:
+        if manual_id is None:
+            _pipelines.clear()
+            _pipeline_errors.clear()
+            return
+        _pipelines.pop(manual_id, None)
+        _pipeline_errors.pop(manual_id, None)
 
 
 def _remap_image_paths(rag: MultimodalRAGPipeline, manual: ManualConfig) -> None:
@@ -269,7 +305,7 @@ def _get_rag(manual_id: Optional[str] = None) -> MultimodalRAGPipeline:
     mid = manual.manual_id
 
     # Fast path: already loaded
-    cached = _pipelines.get(mid)
+    cached = _get_cached_pipeline(mid)
     if cached is not None:
         return cached
 
@@ -281,7 +317,7 @@ def _get_rag(manual_id: Optional[str] = None) -> MultimodalRAGPipeline:
     # trigger a full S3 sync + cache load simultaneously.
     with _get_pipeline_lock(mid):
         # Re-check after acquiring lock (another thread may have loaded it)
-        cached = _pipelines.get(mid)
+        cached = _get_cached_pipeline(mid)
         if cached is not None:
             return cached
         err = _pipeline_errors.get(mid)
@@ -312,7 +348,7 @@ def _get_rag(manual_id: Optional[str] = None) -> MultimodalRAGPipeline:
             print(f"[{mid}] Remapping image paths...")
             _remap_image_paths(rag_instance, manual)
             print(f"[{mid}] Pipeline ready.")
-            _pipelines[mid] = rag_instance
+            _remember_pipeline(mid, rag_instance)
             return rag_instance
         except Exception as e:
             _pipeline_errors[mid] = str(e)
@@ -846,7 +882,7 @@ def api_build_cache(manual_id: Optional[str] = None, skip_existing_images: bool 
         counts = _sync_to_s3(manual)
         counts["images_to_s3"] = n_imgs
         _remap_image_paths(rag_instance, manual)
-        _pipelines[manual.manual_id] = rag_instance
+        _remember_pipeline(manual.manual_id, rag_instance)
         return JSONResponse(
             {
                 "ok": True,
