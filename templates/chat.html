@@ -481,6 +481,68 @@
             }
         }
 
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text || '';
+            return div.innerHTML;
+        }
+
+        function renderMessageHtml(content) {
+            const lines = (content || '').split(/\r?\n/);
+            let html = '';
+            let listType = null;
+
+            function closeList() {
+                if (listType) {
+                    html += `</${listType}>`;
+                    listType = null;
+                }
+            }
+
+            function openList(type) {
+                if (listType === type) return;
+                closeList();
+                const cls = type === 'ol'
+                    ? 'list-decimal pl-5 my-2 space-y-1 text-sm leading-relaxed text-slate-100'
+                    : 'list-disc pl-5 my-2 space-y-1 text-sm leading-relaxed text-slate-100';
+                html += `<${type} class="${cls}">`;
+                listType = type;
+            }
+
+            lines.forEach((line) => {
+                const trimmed = line.trim();
+                if (!trimmed) {
+                    closeList();
+                    return;
+                }
+
+                const ordered = trimmed.match(/^\d+[.)]\s+(.+)$/);
+                if (ordered) {
+                    openList('ol');
+                    html += `<li>${escapeHtml(ordered[1])}</li>`;
+                    return;
+                }
+
+                const bullet = trimmed.match(/^[-*•]\s+(.+)$/);
+                if (bullet) {
+                    openList('ul');
+                    html += `<li>${escapeHtml(bullet[1])}</li>`;
+                    return;
+                }
+
+                closeList();
+                const safety = trimmed.match(/^Safety note:\s*(.*)$/i);
+                if (safety) {
+                    html += `<p class="text-sm leading-relaxed text-slate-100 mt-3"><strong>Safety note:</strong> ${escapeHtml(safety[1])}</p>`;
+                } else {
+                    html += `<p class="text-sm leading-relaxed text-slate-100 my-1">${escapeHtml(trimmed)}</p>`;
+                }
+            });
+
+            closeList();
+            return html || '<p class="text-sm leading-relaxed text-slate-100"></p>';
+        }
+
         // Inject messaging bubbles dynamically into chat window
         function appendMessage(role, content, isLoading = false) {
             const bubbleId = 'bubble_' + generateUUID();
@@ -513,10 +575,10 @@
                     </div>
                 `;
             } else {
-                const textPara = document.createElement('p');
-                textPara.className = 'text-sm whitespace-pre-line leading-relaxed text-slate-100';
-                textPara.innerText = content;
-                messageBody.appendChild(textPara);
+                const textWrap = document.createElement('div');
+                textWrap.className = 'space-y-1';
+                textWrap.innerHTML = renderMessageHtml(content);
+                messageBody.appendChild(textWrap);
             }
 
             bubble.appendChild(avatar);

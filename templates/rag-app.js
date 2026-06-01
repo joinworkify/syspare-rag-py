@@ -10,6 +10,55 @@ function escapeHtml(s) {
   div.textContent = s;
   return div.innerHTML;
 }
+function renderAnswerHtml(answer) {
+  const lines = (answer || '').split(/\r?\n/);
+  let html = '';
+  let listType = null;
+  const closeList = () => {
+    if (listType) {
+      html += `</${listType}>`;
+      listType = null;
+    }
+  };
+  const openList = (type) => {
+    if (listType === type) return;
+    closeList();
+    const cls =
+      type === 'ol'
+        ? 'list-decimal pl-5 my-2 space-y-1'
+        : 'list-disc pl-5 my-2 space-y-1';
+    html += `<${type} class="${cls}">`;
+    listType = type;
+  };
+  lines.forEach((line) => {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      closeList();
+      return;
+    }
+    const ordered = trimmed.match(/^\d+[.)]\s+(.+)$/);
+    if (ordered) {
+      openList('ol');
+      html += `<li>${escapeHtml(ordered[1])}</li>`;
+      return;
+    }
+    const bullet = trimmed.match(/^[-*•]\s+(.+)$/);
+    if (bullet) {
+      openList('ul');
+      html += `<li>${escapeHtml(bullet[1])}</li>`;
+      return;
+    }
+    closeList();
+    const safety = trimmed.match(/^Safety note:\s*(.*)$/i);
+    if (safety) {
+      html += `<p class="mt-3"><strong>Safety note:</strong> ${escapeHtml(safety[1])}</p>`;
+    } else {
+      html += `<p class="my-1">${escapeHtml(trimmed)}</p>`;
+    }
+  });
+  closeList();
+  return html;
+}
 function renderPills(doc, page, score) {
   const parts = [];
   if (doc)
@@ -68,7 +117,7 @@ function renderResults(data) {
   const resultsEl = el('api-results');
   if (!answerEl || !imagesEl || !textsEl || !resultsEl) return;
   answerEl.innerHTML = '';
-  answerEl.appendChild(document.createTextNode(data.answer));
+  answerEl.innerHTML = renderAnswerHtml(data.answer);
   imagesEl.innerHTML = data.images.map((img, i) => renderImage(img, i)).join('');
   textsEl.innerHTML = data.texts.map(renderTextChunk).join('');
   resultsEl.classList.remove('hidden');
