@@ -44,6 +44,63 @@ function escapeHtml(s: string): string {
   return div.innerHTML;
 }
 
+function renderApiAnswerHtml(answer: string): string {
+  const lines = (answer || '').split(/\r?\n/);
+  let html = '';
+  let listType: 'ol' | 'ul' | null = null;
+
+  const closeList = (): void => {
+    if (listType) {
+      html += `</${listType}>`;
+      listType = null;
+    }
+  };
+
+  const openList = (type: 'ol' | 'ul'): void => {
+    if (listType === type) return;
+    closeList();
+    const cls =
+      type === 'ol'
+        ? 'list-decimal pl-5 my-2 space-y-1'
+        : 'list-disc pl-5 my-2 space-y-1';
+    html += `<${type} class="${cls}">`;
+    listType = type;
+  };
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      closeList();
+      continue;
+    }
+
+    const ordered = trimmed.match(/^\d+[.)]\s+(.+)$/);
+    if (ordered) {
+      openList('ol');
+      html += `<li>${escapeHtml(ordered[1])}</li>`;
+      continue;
+    }
+
+    const bullet = trimmed.match(/^[-*•]\s+(.+)$/);
+    if (bullet) {
+      openList('ul');
+      html += `<li>${escapeHtml(bullet[1])}</li>`;
+      continue;
+    }
+
+    closeList();
+    const safety = trimmed.match(/^Safety note:\s*(.*)$/i);
+    if (safety) {
+      html += `<p class="mt-3"><strong>Safety note:</strong> ${escapeHtml(safety[1])}</p>`;
+    } else {
+      html += `<p class="my-1">${escapeHtml(trimmed)}</p>`;
+    }
+  }
+
+  closeList();
+  return html;
+}
+
 function renderPills(doc?: string | null, page?: number | null, score?: number | null): string {
   const parts: string[] = [];
   if (doc) parts.push(`<span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-slate-200 text-slate-700">${escapeHtml(doc)}</span>`);
@@ -84,7 +141,7 @@ function renderResults(data: QueryResponse): void {
   if (!answerEl || !imagesEl || !textsEl || !resultsEl) return;
 
   answerEl.innerHTML = '';
-  answerEl.appendChild(document.createTextNode(data.answer));
+  answerEl.innerHTML = renderApiAnswerHtml(data.answer);
 
   imagesEl.innerHTML = data.images.map((img, i) => renderImage(img, i)).join('');
 
