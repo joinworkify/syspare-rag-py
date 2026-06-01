@@ -487,6 +487,10 @@
             return div.innerHTML;
         }
 
+        function renderInlineHtml(text) {
+            return escapeHtml(text).replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+        }
+
         function renderMessageHtml(content) {
             const lines = (content || '').split(/\r?\n/);
             let html = '';
@@ -519,23 +523,23 @@
                 const ordered = trimmed.match(/^\d+[.)]\s+(.+)$/);
                 if (ordered) {
                     openList('ol');
-                    html += `<li>${escapeHtml(ordered[1])}</li>`;
+                    html += `<li>${renderInlineHtml(ordered[1])}</li>`;
                     return;
                 }
 
                 const bullet = trimmed.match(/^[-*•]\s+(.+)$/);
                 if (bullet) {
                     openList('ul');
-                    html += `<li>${escapeHtml(bullet[1])}</li>`;
+                    html += `<li>${renderInlineHtml(bullet[1])}</li>`;
                     return;
                 }
 
                 closeList();
-                const safety = trimmed.match(/^Safety note:\s*(.*)$/i);
+                const safety = trimmed.match(/^\**Safety note:\**\s*(.*)$/i);
                 if (safety) {
-                    html += `<p class="text-sm leading-relaxed text-slate-100 mt-3"><strong>Safety note:</strong> ${escapeHtml(safety[1])}</p>`;
+                    html += `<p class="text-sm leading-relaxed text-slate-100 mt-3"><strong>Safety note:</strong> ${renderInlineHtml(safety[1])}</p>`;
                 } else {
-                    html += `<p class="text-sm leading-relaxed text-slate-100 my-1">${escapeHtml(trimmed)}</p>`;
+                    html += `<p class="text-sm leading-relaxed text-slate-100 my-1">${renderInlineHtml(trimmed)}</p>`;
                 }
             });
 
@@ -576,7 +580,7 @@
                 `;
             } else {
                 const textWrap = document.createElement('div');
-                textWrap.className = 'space-y-1';
+                textWrap.className = 'space-y-1 whitespace-normal';
                 textWrap.innerHTML = renderMessageHtml(content);
                 messageBody.appendChild(textWrap);
             }

@@ -44,6 +44,10 @@ function escapeHtml(s: string): string {
   return div.innerHTML;
 }
 
+function renderApiInlineHtml(s: string): string {
+  return escapeHtml(s).replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+}
+
 function renderApiAnswerHtml(answer: string): string {
   const lines = (answer || '').split(/\r?\n/);
   let html = '';
@@ -77,23 +81,23 @@ function renderApiAnswerHtml(answer: string): string {
     const ordered = trimmed.match(/^\d+[.)]\s+(.+)$/);
     if (ordered) {
       openList('ol');
-      html += `<li>${escapeHtml(ordered[1])}</li>`;
+      html += `<li>${renderApiInlineHtml(ordered[1])}</li>`;
       continue;
     }
 
     const bullet = trimmed.match(/^[-*•]\s+(.+)$/);
     if (bullet) {
       openList('ul');
-      html += `<li>${escapeHtml(bullet[1])}</li>`;
+      html += `<li>${renderApiInlineHtml(bullet[1])}</li>`;
       continue;
     }
 
     closeList();
-    const safety = trimmed.match(/^Safety note:\s*(.*)$/i);
+    const safety = trimmed.match(/^\**Safety note:\**\s*(.*)$/i);
     if (safety) {
-      html += `<p class="mt-3"><strong>Safety note:</strong> ${escapeHtml(safety[1])}</p>`;
+      html += `<p class="mt-3"><strong>Safety note:</strong> ${renderApiInlineHtml(safety[1])}</p>`;
     } else {
-      html += `<p class="my-1">${escapeHtml(trimmed)}</p>`;
+      html += `<p class="my-1">${renderApiInlineHtml(trimmed)}</p>`;
     }
   }
 
@@ -140,6 +144,8 @@ function renderResults(data: QueryResponse): void {
   const resultsEl = el('api-results');
   if (!answerEl || !imagesEl || !textsEl || !resultsEl) return;
 
+  answerEl.classList.remove('whitespace-pre-wrap');
+  answerEl.classList.add('whitespace-normal');
   answerEl.innerHTML = '';
   answerEl.innerHTML = renderApiAnswerHtml(data.answer);
 

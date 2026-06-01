@@ -10,6 +10,9 @@ function escapeHtml(s) {
   div.textContent = s;
   return div.innerHTML;
 }
+function renderInlineHtml(s) {
+  return escapeHtml(s).replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+}
 function renderAnswerHtml(answer) {
   const lines = (answer || '').split(/\r?\n/);
   let html = '';
@@ -39,21 +42,21 @@ function renderAnswerHtml(answer) {
     const ordered = trimmed.match(/^\d+[.)]\s+(.+)$/);
     if (ordered) {
       openList('ol');
-      html += `<li>${escapeHtml(ordered[1])}</li>`;
+      html += `<li>${renderInlineHtml(ordered[1])}</li>`;
       return;
     }
     const bullet = trimmed.match(/^[-*•]\s+(.+)$/);
     if (bullet) {
       openList('ul');
-      html += `<li>${escapeHtml(bullet[1])}</li>`;
+      html += `<li>${renderInlineHtml(bullet[1])}</li>`;
       return;
     }
     closeList();
-    const safety = trimmed.match(/^Safety note:\s*(.*)$/i);
+    const safety = trimmed.match(/^\**Safety note:\**\s*(.*)$/i);
     if (safety) {
-      html += `<p class="mt-3"><strong>Safety note:</strong> ${escapeHtml(safety[1])}</p>`;
+      html += `<p class="mt-3"><strong>Safety note:</strong> ${renderInlineHtml(safety[1])}</p>`;
     } else {
-      html += `<p class="my-1">${escapeHtml(trimmed)}</p>`;
+      html += `<p class="my-1">${renderInlineHtml(trimmed)}</p>`;
     }
   });
   closeList();
@@ -135,6 +138,8 @@ function renderResults(data) {
   const debugAnswerEl = el('api-english-answer');
   if (!answerEl || !imagesEl || !textsEl || !resultsEl) return;
 
+  answerEl.classList.remove('whitespace-pre-wrap');
+  answerEl.classList.add('whitespace-normal');
   answerEl.innerHTML = '';
   answerEl.innerHTML = renderAnswerHtml(data.answer ?? '');
   imagesEl.innerHTML = (data.images || []).map((img) => renderImage(img)).join('');
