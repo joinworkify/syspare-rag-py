@@ -1724,71 +1724,26 @@ def api_chat(payload: ChatRequest):
         return JSONResponse({"detail": f"RAG not ready: {e}"}, status_code=503)
 
     session_id = payload.session_id or str(uuid.uuid4())
-    
-    # 1. Condense/Rewrite follow-up query using history
+
+    # 1. Condense follow-up questions into a standalone search query using history
     search_query = _condense_conversational_query(rag, payload.question, payload.history)
-    
-    # 2. Retrieve only when history doesn't already cover the question
-    if _needs_retrieval(rag, search_query, payload.history):
-        text_matches = rag.search_text(search_query, top_n=payload.top_k_text, chunk_text=True)
-        image_matches = rag.search_images_by_description_text(search_query, top_n=payload.top_k_img)
-    else:
-        text_matches = {}
-        image_matches = {}
-    
-    # 3. Format conversational prompt context
-    context_str = ""
-    for idx, t in enumerate(text_matches.values()):
-        context_str += f"Manual Clip [{idx+1}]:\n{t.get('chunk_text', '')}\n\n"
 
-    context_images_str = ""
-    for idx, img in enumerate(image_matches.values()):
-        caption = img.get("image_description") or img.get("img_desc") or ""
-        context_images_str += f"Image {idx+1}:\nCaption: {caption}\n\n"
-
-    history_str = ""
-    for msg in payload.history:
-        role_label = "Farmer" if msg.role == "user" else "Tractor Assistant"
-        history_str += f"{role_label}: {msg.content}\n"
-
-    lang = (payload.answer_language or "auto").strip().lower()
-    if lang in ("en", "english"):
-        lang_instruction = "You MUST write your entire response in English."
-    elif lang in ("my", "mm", "myanmar", "burmese"):
-        lang_instruction = "You MUST write your entire response in Myanmar (Burmese)."
-    elif lang in ("ja", "jp", "japanese"):
-        lang_instruction = "You MUST write your entire response in Japanese."
-    else:
-        lang_instruction = "Write your response in the language of the farmer's latest query (e.g. English, Myanmar, or Japanese)."
-
-    system_prompt = (
-        "You are an empathetic, expert tractor technician and farmer's advisor.\n"
-        "Your goal is to guide the farmer safely and step-by-step through their troubleshooting scenario.\n\n"
-        "Guidelines:\n"
-        "1. Keep answers concise, extremely practical, and structured as steps or simple recommendations.\n"
-        "2. Keep a friendly, helpful tone to support the farmer or mechanic.\n"
-        "3. Only use instructions from the provided Operation Manual Clips or reference details in the Retrieved Images below.\n"
-        "4. CRITICAL IMAGE CITATION RULE: If you use or refer to details, instructions, or visuals from a retrieved image to support your explanation, "
-        "you MUST cite it inline using the format [Image X] where X is the image index (e.g. [Image 1], [Image 2]). Only cite an image if it is relevant to the answer.\n"
-        "5. CRITICAL MANUAL CLIP CITATION RULE: Do NOT EVER cite, print, or reference any '[Manual Clip X]' or 'Manual Clip' indexes/tags in your response. "
-        "Do not mention manual clip numbers. Speak naturally as an advisor, using the manual clip text silently as your background knowledge. "
-        "If the manual clips do not contain the answer, gently instruct the farmer to perform general safety steps and check in with their local dealer.\n"
-        f"6. LANGUAGE RULE: {lang_instruction}\n\n"
-        f"Operation Manual Clips:\n{context_str}\n"
-        f"Retrieved Images Context:\n{context_images_str}\n"
-        f"Conversation History:\n{history_str}"
-        f"Farmer's Latest Query: {payload.question}\n\n"
-        "Tractor Assistant Response:"
-    )
-
-    # 4. Generate Answer
-    out = get_gemini_response(
-        rag.text_model,
-        model_input=system_prompt,
+    # 2. Generate answer using same pipeline as /api/query for identical formatting
+    out = rag.answer_multimodal_query(
+        search_query,
+        top_n_text=payload.top_k_text,
+        top_n_images=payload.top_k_img,
+        temperature=payload.temp,
         stream=False,
-        generation_config=GenerationConfig(temperature=payload.temp, max_output_tokens=1024),
+        include_step_by_step=False,
+        answer_language=payload.answer_language,
     )
-    answer = (out or "").strip()
+    answer = out["response"]
+    text_matches = out["text_matches"]
+    image_matches = out["image_matches"]
+
+    if not isinstance(answer, str):
+        answer = str(answer)
 
     # Only return images actually cited; renumber citations to match filtered order
     image_matches, answer = _filter_images_by_citations(image_matches, answer)

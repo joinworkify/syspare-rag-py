@@ -80,6 +80,7 @@ class MultimodalRAGPipeline:
         self.text_model: GenerativeModel = None  # type: ignore
         self.multimodal_model: GenerativeModel = None  # type: ignore
         self.multimodal_model_flash: GenerativeModel = None  # type: ignore
+        self.answer_model: GenerativeModel = None  # type: ignore
 
         self._text_embedder: VertexTextEmbedder
 
@@ -97,6 +98,15 @@ class MultimodalRAGPipeline:
         self.text_model = GenerativeModel(self.config.model_name)
         self.multimodal_model = self.text_model
         self.multimodal_model_flash = self.text_model
+        self.answer_model = GenerativeModel(
+            self.config.model_name,
+            system_instruction=(
+                "You are a tractor service assistant. "
+                "ALWAYS format responses in Markdown. "
+                "ALWAYS use numbered lists (1. 2. 3.) for sequential steps — NEVER plain sentences. "
+                "Use **bold** for warnings. Use * bullets for non-sequential items."
+            ),
+        )
 
         self._text_embedder = VertexTextEmbedder(
             model_name=self.config.text_embedding_model
@@ -780,24 +790,29 @@ class MultimodalRAGPipeline:
         )
 
         prompt = (
-            "Instructions: Compare the images and the text provided as Context: to answer multiple Question:\n"
-            "CRITICAL CITATION RULE: When answering, if you use or reference information from a specific image to support your explanation, "
-            "you MUST cite it inline using the format [Image X] where X is the image index number (e.g. [Image 1], [Image 2]). "
-            "Always include these inline references if you rely on details or visual elements from the images.\n\n"
+            "Instructions: Answer the question using ONLY the Context provided below.\n"
+            "RULE 1 - FORMAT: You MUST respond in Markdown. "
+            "For ANY sequence of steps, you MUST use a numbered list exactly like this:\n"
+            "1. First step here\n"
+            "2. Second step here\n"
+            "3. Third step here\n"
+            "NEVER write steps as plain sentences or paragraphs. ALWAYS number them.\n"
+            "Use **bold** for warnings and safety info. Use * bullets for non-sequential lists.\n"
+            "RULE 2 - CITATIONS: If you reference an image, cite it inline as [Image X] "
+            "(e.g. [Image 1], [Image 2]). Only cite images relevant to your answer.\n\n"
             f"{lang_line}"
             f"{reasoning_line}"
-            # 'If unsure, respond, "Not enough context to answer".\n\n'
             "Context:\n"
             " - Text Context:\n"
             f"{final_context_text}\n"
             " - Image Context:\n"
             f"{context_images}\n\n"
-            f"{query}\n\n"
-            "Answer:\n"
+            f"Question: {query}\n\n"
+            "Answer (in Markdown with numbered steps):\n"
         )
 
         response = get_gemini_response(
-            self.multimodal_model,
+            self.answer_model,
             model_input=[prompt],
             stream=stream,
             generation_config=GenerationConfig(temperature=temperature),
