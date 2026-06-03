@@ -62,7 +62,7 @@ LOCATION = _env("LOCATION", "us-central1")
 DISABLE_S3_SYNC = _env("DISABLE_S3_SYNC", "0")
 INIT_RAG_ON_STARTUP = _env("INIT_RAG_ON_STARTUP", "0")
 INIT_ALL_RAG_ON_STARTUP = _env("INIT_ALL_RAG_ON_STARTUP", "0")
-GEMINI_MODEL = _env("GEMINI_MODEL", "gemini-2.0-flash")
+GEMINI_MODEL = _env("GEMINI_MODEL", "gemini-2.5-flash")
 
 # Manual registry: list of available manuals + default selection.
 manual_registry: ManualRegistry = load_manual_registry_from_env()
@@ -1652,7 +1652,7 @@ def _condense_conversational_query(rag, question: str, history: List[ChatMessage
         f"Follow-up Question: {question}\n\n"
         "Standalone English Query:"
     )
-    
+
     out = get_gemini_response(
         rag.text_model,
         model_input=instruction,
@@ -1731,10 +1731,10 @@ def api_chat(payload: ChatRequest):
         return JSONResponse({"detail": f"RAG not ready: {e}"}, status_code=503)
 
     session_id = payload.session_id or str(uuid.uuid4())
-    
+
     # 1. Condense/Rewrite follow-up query using history
     search_query = _condense_conversational_query(rag, payload.question, payload.history)
-    
+
     # 2. Retrieve only when history doesn't already cover the question
     if _needs_retrieval(rag, search_query, payload.history):
         text_matches = rag.search_text(search_query, top_n=payload.top_k_text, chunk_text=True)
@@ -1742,7 +1742,7 @@ def api_chat(payload: ChatRequest):
     else:
         text_matches = {}
         image_matches = {}
-    
+
     # 3. Format conversational prompt context
     context_str = ""
     for idx, t in enumerate(text_matches.values()):
@@ -1891,7 +1891,7 @@ def api_generate_random_question(payload: GenerateQuestionRequest):
     matched_df = df[df["file_name"].str.lower() == payload.model_name.lower()]
     if matched_df.empty:
         matched_df = df[df["file_name"].str.lower().str.contains(payload.model_name.lower())]
-        
+
     if matched_df.empty:
         matched_df = df
 
@@ -1919,7 +1919,7 @@ def api_generate_random_question(payload: GenerateQuestionRequest):
     # Filter out bad chunks and keep order
     matched_df = matched_df.reset_index(drop=True)
     clean_indices = [i for i, row in matched_df.iterrows() if is_clean_chunk(row.get("chunk_text") or row.get("text"))]
-    
+
     if not clean_indices:
         return JSONResponse(
             {"error": "No clean/descriptive text chunks found for model question generation."},
@@ -1927,7 +1927,7 @@ def api_generate_random_question(payload: GenerateQuestionRequest):
         )
 
     count = max(1, min(payload.count, 50))
-    
+
     if count <= len(clean_indices):
         start_indices = random.sample(clean_indices, count)
     else:
@@ -1942,11 +1942,11 @@ def api_generate_random_question(payload: GenerateQuestionRequest):
             if candidate_idx >= len(matched_df):
                 break
             candidate_row = matched_df.iloc[candidate_idx]
-            
+
             # Check if same document
             if candidate_row["file_name"] != matched_df.iloc[start_idx]["file_name"]:
                 break
-                
+
             candidate_text = candidate_row.get("chunk_text") or candidate_row.get("text") or ""
             if is_clean_chunk(candidate_text):
                 chunks_to_use.append(candidate_row)
@@ -1961,7 +1961,7 @@ def api_generate_random_question(payload: GenerateQuestionRequest):
         page_nums = []
         chunk_numbers = []
         file_name = chunks_to_use[0]["file_name"]
-        
+
         for c in chunks_to_use:
             c_text = c.get("chunk_text") or c.get("text") or ""
             merged_texts.append(c_text.strip())
