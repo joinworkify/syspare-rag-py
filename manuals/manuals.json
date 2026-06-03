@@ -45,11 +45,29 @@
     "description": "Operator-facing manual for YH"
   },
   {
-    "manual_id": "EF514T_Manual",
-    "display_name": "Ef514T Manual",
-    "pdf_folder": "manuals/EF514T_manual/pdf",
-    "cache_dir": "manuals/EF514T_manual/cache",
-    "image_dir": "manuals/EF514T_manual/cache/images",
+    "manual_id": "EF725_service",
+    "display_name": "EF725 Service Manual",
+    "pdf_folder": "manuals/EF725_service/pdf",
+    "cache_dir": "manuals/EF725_service/cache",
+    "image_dir": "manuals/EF725_service/cache/images",
+    "ocr_lang": "eng",
+    "description": ""
+  },
+  {
+    "manual_id": "YM357_operation",
+    "display_name": "YM357 Operation Manual",
+    "pdf_folder": "manuals/YM357_operation/pdf",
+    "cache_dir": "manuals/YM357_operation/cache",
+    "image_dir": "manuals/YM357_operation/cache/images",
+    "ocr_lang": "eng",
+    "description": ""
+  },
+  {
+    "manual_id": "CH_manual",
+    "display_name": "CH Manual",
+    "pdf_folder": "manuals/CH_manual/pdf",
+    "cache_dir": "manuals/CH_manual/cache",
+    "image_dir": "manuals/CH_manual/cache/images",
     "ocr_lang": "eng",
     "description": ""
   }
