@@ -77,6 +77,8 @@ LOCATION = _env("LOCATION", "us-central1")
 # Allow disabling S3 sync for local/dev (set DISABLE_S3_SYNC=1).
 DISABLE_S3_SYNC = _env("DISABLE_S3_SYNC", "0")
 INIT_RAG_ON_STARTUP = _env("INIT_RAG_ON_STARTUP", "0")
+INIT_ALL_RAG_ON_STARTUP = _env("INIT_ALL_RAG_ON_STARTUP", "0")
+GEMINI_MODEL = _env("GEMINI_MODEL", "gemini-2.5-flash")
 RAG_PIPELINE_CACHE_SIZE = max(1, _env_int("RAG_PIPELINE_CACHE_SIZE", 1))
 
 # Shown when the first retrieval pass was too thin and the search was widened.
@@ -304,7 +306,7 @@ def _build_rag_config(manual: ManualConfig) -> RagConfig:
     return RagConfig(
         project_id=PROJECT_ID,
         location=LOCATION,
-        model_name="gemini-2.5-flash",
+        model_name=GEMINI_MODEL,
         embedding_size=1408,
         embedding_model_name="multimodalembedding@001",
         image_save_dir=manual.image_dir,
@@ -373,17 +375,22 @@ def _get_rag(manual_id: Optional[str] = None) -> MultimodalRAGPipeline:
 
 @app.on_event("startup")
 def _ensure_rag():
-    """Warm up default pipeline in background so health checks pass immediately."""
-    if INIT_RAG_ON_STARTUP != "1":
-        return
-
-    def _warmup():
-        try:
-            _get_rag(DEFAULT_MANUAL_ID)
-        except Exception as e:
-            print(f"[{DEFAULT_MANUAL_ID}] RAG warmup failed: {e}")
-
-    threading.Thread(target=_warmup, daemon=True).start()
+    """Warm up pipelines in background so health checks pass immediately."""
+    if INIT_ALL_RAG_ON_STARTUP == "1":
+        def _warmup_all():
+            for manual in manual_registry.list():
+                try:
+                    _get_rag(manual.manual_id)
+                except Exception as e:
+                    print(f"[{manual.manual_id}] RAG warmup failed: {e}")
+        threading.Thread(target=_warmup_all, daemon=True).start()
+    elif INIT_RAG_ON_STARTUP == "1":
+        def _warmup():
+            try:
+                _get_rag(DEFAULT_MANUAL_ID)
+            except Exception as e:
+                print(f"[{DEFAULT_MANUAL_ID}] RAG warmup failed: {e}")
+        threading.Thread(target=_warmup, daemon=True).start()
 
 
 # -----------------------------
@@ -1700,7 +1707,7 @@ def _condense_conversational_query(rag, question: str, history: List[ChatMessage
         f"Follow-up Question: {question}\n\n"
         "Standalone English Query:"
     )
-    
+
     out = get_gemini_response(
         rag.text_model,
         model_input=instruction,
@@ -1779,6 +1786,19 @@ def api_chat(payload: ChatRequest):
 
     # 1. Condense/Rewrite follow-up query using history
     search_query = _condense_conversational_query(rag, payload.question, payload.history)
+
+    # 2. Retrieve only when history doesn't already cover the question
+    if _needs_retrieval(rag, search_query, payload.history):
+        text_matches = rag.search_text(search_query, top_n=payload.top_k_text, chunk_text=True)
+        image_matches = rag.search_images_by_description_text(search_query, top_n=payload.top_k_img)
+    else:
+        text_matches = {}
+        image_matches = {}
+
+    # 3. Format conversational prompt context
+    context_str = ""
+    for idx, t in enumerate(text_matches.values()):
+        context_str += f"Manual Clip [{idx+1}]:\n{t.get('chunk_text', '')}\n\n"
 
     needs_retrieval = _needs_retrieval(rag, search_query, payload.history)
 
@@ -1959,7 +1979,7 @@ def api_generate_random_question(payload: GenerateQuestionRequest):
     matched_df = df[df["file_name"].str.lower() == payload.model_name.lower()]
     if matched_df.empty:
         matched_df = df[df["file_name"].str.lower().str.contains(payload.model_name.lower())]
-        
+
     if matched_df.empty:
         matched_df = df
 
@@ -1987,7 +2007,7 @@ def api_generate_random_question(payload: GenerateQuestionRequest):
     # Filter out bad chunks and keep order
     matched_df = matched_df.reset_index(drop=True)
     clean_indices = [i for i, row in matched_df.iterrows() if is_clean_chunk(row.get("chunk_text") or row.get("text"))]
-    
+
     if not clean_indices:
         return JSONResponse(
             {"error": "No clean/descriptive text chunks found for model question generation."},
@@ -1995,7 +2015,7 @@ def api_generate_random_question(payload: GenerateQuestionRequest):
         )
 
     count = max(1, min(payload.count, 50))
-    
+
     if count <= len(clean_indices):
         start_indices = random.sample(clean_indices, count)
     else:
@@ -2010,11 +2030,11 @@ def api_generate_random_question(payload: GenerateQuestionRequest):
             if candidate_idx >= len(matched_df):
                 break
             candidate_row = matched_df.iloc[candidate_idx]
-            
+
             # Check if same document
             if candidate_row["file_name"] != matched_df.iloc[start_idx]["file_name"]:
                 break
-                
+
             candidate_text = candidate_row.get("chunk_text") or candidate_row.get("text") or ""
             if is_clean_chunk(candidate_text):
                 chunks_to_use.append(candidate_row)
@@ -2029,7 +2049,7 @@ def api_generate_random_question(payload: GenerateQuestionRequest):
         page_nums = []
         chunk_numbers = []
         file_name = chunks_to_use[0]["file_name"]
-        
+
         for c in chunks_to_use:
             c_text = c.get("chunk_text") or c.get("text") or ""
             merged_texts.append(c_text.strip())

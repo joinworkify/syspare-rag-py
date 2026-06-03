@@ -409,7 +409,7 @@ ls -l /opt/syspare-rag-py/rag-service-account.json
 # do this in the ssh terminal
 export GOOGLE_APPLICATION_CREDENTIALS=/opt/syspare-rag-py/rag-service-account.json
 export GOOGLE_CLOUD_PROJECT="fortuneaii"
-export GOOGLE_CLOUD_LOCATION="us-central1" 
+export GOOGLE_CLOUD_LOCATION="us-central1"
 
 # run the source code and test
 uvicorn rag_server:app --host 0.0.0.0 --port 8000

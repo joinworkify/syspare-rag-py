@@ -7,13 +7,15 @@
 #
 # If you DON'T have tesseract/pytesseract installed, set enable_ocr_fallback=False.
 
+import os
+
 from vertexai.generative_models import GenerationConfig
 from pipeline import RagConfig, MultimodalRAGPipeline
 
 cfg = RagConfig(
     project_id="fortunaii",
     location="us-central1",
-    model_name="gemini-2.5-flash",
+    model_name=os.environ.get("GEMINI_MODEL", "gemini-2.5-flash"),
     embedding_size=1408,
     embedding_model_name="multimodalembedding@001",  # used to embed OCR chunks
     image_save_dir="./cache_ym358a/images",  # extracted images stored here
