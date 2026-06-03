@@ -650,6 +650,112 @@ def _english_answer_to_japanese(rag: MultimodalRAGPipeline, english_answer: str)
     return (out or "").strip()
 
 
+def _detect_supported_language(text: str) -> str:
+    """Detect the small set of user-facing languages supported by this API."""
+    if re.search(r"[\u3040-\u309f\u30a0-\u30ff\u4e00-\u9faf]", text or ""):
+        return "ja"
+    if re.search(r"[\u1000-\u109f]", text or ""):
+        return "my"
+    return "en"
+
+
+def _normalize_target_answer_language(question: str, answer_language: str) -> str:
+    lang = (answer_language or "auto").strip().lower()
+    if lang in ("en", "english"):
+        return "en"
+    if lang in ("my", "mm", "myanmar", "burmese"):
+        return "my"
+    if lang in ("ja", "jp", "japanese"):
+        return "ja"
+    return _detect_supported_language(question)
+
+
+def _rewrite_to_english_for_search(
+    rag: MultimodalRAGPipeline, question: str, source_language: str
+) -> str:
+    if source_language == "my":
+        return _rewrite_myanmar_to_english_query(rag, question)
+    if source_language == "ja":
+        return _rewrite_japanese_to_english_query(rag, question)
+    return question
+
+
+def _translate_english_answer(
+    rag: MultimodalRAGPipeline, english_answer: str, target_language: str
+) -> str:
+    if target_language == "my":
+        return _english_answer_to_myanmar(rag, english_answer)
+    if target_language == "ja":
+        return _english_answer_to_japanese(rag, english_answer)
+    return english_answer
+
+
+def _is_generation_failure(value: Any) -> bool:
+    text = value if isinstance(value, str) else str(value or "")
+    return not text.strip() or text.strip() == "Exception occurred"
+
+
+def _run_english_core_multimodal_query(
+    rag: MultimodalRAGPipeline,
+    *,
+    question: str,
+    top_k_text: int,
+    top_k_img: int,
+    temperature: float,
+    target_language: str,
+    manual_label: str,
+    available_models: List[str],
+) -> Dict[str, Any]:
+    """Run retrieval/generation in English, translating only at the boundaries."""
+    source_language = _detect_supported_language(question)
+    english_query = _rewrite_to_english_for_search(rag, question, source_language)
+    if _is_generation_failure(english_query):
+        raise RuntimeError(
+            "Failed to rewrite question to English. Try again or check Vertex AI / Gemini."
+        )
+
+    out = rag.answer_multimodal_query(
+        english_query,
+        top_n_text=top_k_text,
+        top_n_images=top_k_img,
+        temperature=temperature,
+        stream=False,
+        include_step_by_step=False,
+        answer_language="en",
+        manual_label=manual_label,
+        available_models=available_models,
+    )
+    text_matches = out["text_matches"]
+    image_matches = out["image_matches"]
+    english_answer = out["response"]
+    if not isinstance(english_answer, str):
+        english_answer = str(english_answer)
+
+    if _is_generation_failure(english_answer):
+        raise RuntimeError(
+            "RAG answer generation failed. Try again or check Vertex AI / Gemini."
+        )
+
+    image_matches, renumbered_english = _filter_images_by_citations(
+        image_matches, english_answer
+    )
+
+    answer = _translate_english_answer(rag, renumbered_english, target_language)
+    if _is_generation_failure(answer):
+        raise RuntimeError(
+            "Failed to translate answer. Try again or check Vertex AI / Gemini."
+        )
+
+    return {
+        "answer": answer,
+        "english_query": english_query,
+        "english_answer": renumbered_english,
+        "text_matches": text_matches,
+        "image_matches": image_matches,
+        "retrieval_expanded": bool(out.get("retrieval_expanded")),
+    }
+
+
 # -----------------------------
 # API models (JSON RAG API)
 # -----------------------------
@@ -1112,32 +1218,30 @@ def api_query(payload: QueryRequest):
             status_code=503,
         )
 
-    out = rag.answer_multimodal_query(
-        payload.question,
-        top_n_text=payload.top_k_text,
-        top_n_images=payload.top_k_img,
-        temperature=payload.temp,
-        stream=False,
-        include_step_by_step=False,
-        answer_language=payload.answer_language,
-        manual_label=manual.display_name,
-        available_models=_available_model_labels(),
-    )
-    # Use the matches from whichever retrieval pass actually answered (may be the
-    # widened fallback pass) so displayed sources match the answer.
+    try:
+        out = _run_english_core_multimodal_query(
+            rag,
+            question=payload.question,
+            top_k_text=payload.top_k_text,
+            top_k_img=payload.top_k_img,
+            temperature=payload.temp,
+            target_language=_normalize_target_answer_language(
+                payload.question, payload.answer_language
+            ),
+            manual_label=manual.display_name,
+            available_models=_available_model_labels(),
+        )
+    except RuntimeError as e:
+        return JSONResponse({"detail": str(e)}, status_code=503)
+
     text_matches = out["text_matches"]
     image_matches = out["image_matches"]
-    answer = out["response"]
-    if not isinstance(answer, str):
-        answer = str(answer)
-
-    # Only return images actually cited; renumber citations to match filtered order
-    image_matches, answer = _filter_images_by_citations(image_matches, answer)
+    answer = out["answer"]
 
     texts_norm = _normalize_text_matches(text_matches)
     images_norm = _normalize_image_matches(image_matches, manual.manual_id)
 
-    retrieval_expanded = bool(out.get("retrieval_expanded"))
+    retrieval_expanded = bool(out["retrieval_expanded"])
     return QueryResponse(
         answer=answer,
         texts=[TextChunk(**t) for t in texts_norm],
@@ -1179,69 +1283,36 @@ def api_query_myanmar(payload: MyanmarQueryRequest):
             status_code=503,
         )
 
-    english_query = _rewrite_myanmar_to_english_query(rag, q_raw)
-    if not english_query or english_query == "Exception occurred":
-        return JSONResponse(
-            {
-                "detail": "Failed to rewrite question to English. Try again or check Vertex AI / Gemini."
-            },
-            status_code=503,
+    try:
+        out = _run_english_core_multimodal_query(
+            rag,
+            question=q_raw,
+            top_k_text=payload.top_k_text,
+            top_k_img=payload.top_k_img,
+            temperature=payload.temp,
+            target_language="my",
+            manual_label=manual.display_name,
+            available_models=_available_model_labels(),
         )
+    except RuntimeError as e:
+        return JSONResponse({"detail": str(e)}, status_code=503)
 
-    out = rag.answer_multimodal_query(
-        english_query,
-        top_n_text=payload.top_k_text,
-        top_n_images=payload.top_k_img,
-        temperature=payload.temp,
-        stream=False,
-        include_step_by_step=False,
-        answer_language="en",
-        manual_label=manual.display_name,
-        available_models=_available_model_labels(),
-    )
-    text_matches = out["text_matches"]
-    image_matches = out["image_matches"]
-    english_answer = out["response"]
-    if not isinstance(english_answer, str):
-        english_answer = str(english_answer)
+    texts_norm = _normalize_text_matches(out["text_matches"])
+    images_norm = _normalize_image_matches(out["image_matches"], manual.manual_id)
 
-    if not english_answer.strip() or english_answer.strip() == "Exception occurred":
-        return JSONResponse(
-            {
-                "detail": "RAG answer generation failed. Try again or check Vertex AI / Gemini."
-            },
-            status_code=503,
-        )
-
-    # Filter images to only those cited in the English answer, then renumber
-    image_matches, renumbered_english = _filter_images_by_citations(
-        image_matches, english_answer
-    )
-
-    myanmar_answer = _english_answer_to_myanmar(rag, renumbered_english)
-    if not myanmar_answer or myanmar_answer == "Exception occurred":
-        return JSONResponse(
-            {
-                "detail": "Failed to translate answer to Myanmar. Try again or check Vertex AI / Gemini."
-            },
-            status_code=503,
-        )
-
-    texts_norm = _normalize_text_matches(text_matches)
-    images_norm = _normalize_image_matches(image_matches, manual.manual_id)
-
-    retrieval_expanded = bool(out.get("retrieval_expanded"))
     return MyanmarQueryResponse(
-        answer=myanmar_answer,
+        answer=out["answer"],
         texts=[TextChunk(**t) for t in texts_norm],
         images=[ImageMatch(**img) for img in images_norm],
-        english_query=english_query if payload.include_intermediate_english else None,
+        english_query=out["english_query"] if payload.include_intermediate_english else None,
         english_answer=(
-            renumbered_english if payload.include_intermediate_english else None
+            out["english_answer"] if payload.include_intermediate_english else None
         ),
         manual_id=manual.manual_id,
-        retrieval_expanded=retrieval_expanded,
-        retrieval_message=RETRIEVAL_EXPANDED_MESSAGE if retrieval_expanded else None,
+        retrieval_expanded=out["retrieval_expanded"],
+        retrieval_message=(
+            RETRIEVAL_EXPANDED_MESSAGE if out["retrieval_expanded"] else None
+        ),
     )
 
 
@@ -1270,69 +1341,36 @@ def api_query_japanese(payload: JapaneseQueryRequest):
             status_code=503,
         )
 
-    english_query = _rewrite_japanese_to_english_query(rag, q_raw)
-    if not english_query or english_query == "Exception occurred":
-        return JSONResponse(
-            {
-                "detail": "Failed to rewrite question to English. Try again or check Vertex AI / Gemini."
-            },
-            status_code=503,
+    try:
+        out = _run_english_core_multimodal_query(
+            rag,
+            question=q_raw,
+            top_k_text=payload.top_k_text,
+            top_k_img=payload.top_k_img,
+            temperature=payload.temp,
+            target_language="ja",
+            manual_label=manual.display_name,
+            available_models=_available_model_labels(),
         )
+    except RuntimeError as e:
+        return JSONResponse({"detail": str(e)}, status_code=503)
 
-    out = rag.answer_multimodal_query(
-        english_query,
-        top_n_text=payload.top_k_text,
-        top_n_images=payload.top_k_img,
-        temperature=payload.temp,
-        stream=False,
-        include_step_by_step=False,
-        answer_language="en",
-        manual_label=manual.display_name,
-        available_models=_available_model_labels(),
-    )
-    text_matches = out["text_matches"]
-    image_matches = out["image_matches"]
-    english_answer = out["response"]
-    if not isinstance(english_answer, str):
-        english_answer = str(english_answer)
+    texts_norm = _normalize_text_matches(out["text_matches"])
+    images_norm = _normalize_image_matches(out["image_matches"], manual.manual_id)
 
-    if not english_answer.strip() or english_answer.strip() == "Exception occurred":
-        return JSONResponse(
-            {
-                "detail": "RAG answer generation failed. Try again or check Vertex AI / Gemini."
-            },
-            status_code=503,
-        )
-
-    # Filter images to only those cited in the English answer, then renumber
-    image_matches, renumbered_english = _filter_images_by_citations(
-        image_matches, english_answer
-    )
-
-    japanese_answer = _english_answer_to_japanese(rag, renumbered_english)
-    if not japanese_answer or japanese_answer == "Exception occurred":
-        return JSONResponse(
-            {
-                "detail": "Failed to translate answer to Japanese. Try again or check Vertex AI / Gemini."
-            },
-            status_code=503,
-        )
-
-    texts_norm = _normalize_text_matches(text_matches)
-    images_norm = _normalize_image_matches(image_matches, manual.manual_id)
-
-    retrieval_expanded = bool(out.get("retrieval_expanded"))
     return JapaneseQueryResponse(
-        answer=japanese_answer,
+        answer=out["answer"],
         texts=[TextChunk(**t) for t in texts_norm],
         images=[ImageMatch(**img) for img in images_norm],
-        english_query=english_query if payload.include_intermediate_english else None,
+        english_query=out["english_query"] if payload.include_intermediate_english else None,
         english_answer=(
-            renumbered_english if payload.include_intermediate_english else None
+            out["english_answer"] if payload.include_intermediate_english else None
         ),
         manual_id=manual.manual_id,
-        retrieval_expanded=retrieval_expanded,
-        retrieval_message=RETRIEVAL_EXPANDED_MESSAGE if retrieval_expanded else None,
+        retrieval_expanded=out["retrieval_expanded"],
+        retrieval_message=(
+            RETRIEVAL_EXPANDED_MESSAGE if out["retrieval_expanded"] else None
+        ),
     )
 
 
@@ -1949,15 +1987,13 @@ def api_chat(payload: ChatRequest):
         role_label = "Farmer" if msg.role == "user" else "Tractor Assistant"
         history_str += f"{role_label}: {msg.content}\n"
 
-    lang = (payload.answer_language or "auto").strip().lower()
-    if lang in ("en", "english"):
-        lang_instruction = "You MUST write your entire response in English."
-    elif lang in ("my", "mm", "myanmar", "burmese"):
-        lang_instruction = "You MUST write your entire response in Myanmar (Burmese)."
-    elif lang in ("ja", "jp", "japanese"):
-        lang_instruction = "You MUST write your entire response in Japanese."
-    else:
-        lang_instruction = "Write your response in the language of the farmer's latest query (e.g. English, Myanmar, or Japanese)."
+    target_language = _normalize_target_answer_language(
+        payload.question, payload.answer_language
+    )
+    lang_instruction = (
+        "You MUST write your entire response in English. "
+        "Translations for the farmer are handled after this step."
+    )
 
     available_models = _available_model_labels()
     available_line = (
@@ -2032,6 +2068,16 @@ def api_chat(payload: ChatRequest):
 
     # Only return images actually cited; renumber citations to match filtered order
     image_matches, answer = _filter_images_by_citations(image_matches, answer)
+
+    if target_language != "en":
+        answer = _translate_english_answer(rag, answer, target_language)
+        if _is_generation_failure(answer):
+            return JSONResponse(
+                {
+                    "detail": "Failed to translate answer. Try again or check Vertex AI / Gemini."
+                },
+                status_code=503,
+            )
 
     # Normalize responses
     texts_norm = _normalize_text_matches(text_matches)
