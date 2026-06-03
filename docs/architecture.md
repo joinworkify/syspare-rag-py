@@ -89,7 +89,7 @@ manuals/<manual_id>/
 |---|---|
 | Text embedding (chunks, queries, descriptions) | `text-embedding-004` (768d) |
 | Image pixel embedding | `multimodalembedding@001` (1408d) |
-| Image description + answer generation | `gemini-2.0-flash` |
+| Image description + answer generation | `gemini-3.5-flash` |
 
 ## Language Support
 
