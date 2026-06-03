@@ -463,7 +463,7 @@ PROJECT_ID = "fortunaii"
 LOCATION = "us-central1"
 
 vertexai.init(project=PROJECT_ID, location=LOCATION)
-model = GenerativeModel("gemini-3.5-flash")
+model = GenerativeModel("gemini-2.5-flash")
 
 resp = model.generate_content("Say 'ok' in one word.")
 print(resp.text)

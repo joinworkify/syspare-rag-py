@@ -35,7 +35,7 @@ class RagConfig:
     location: str = "us-central1"
 
     # Gemini generation
-    model_name: str = "gemini-3.5-flash"
+    model_name: str = "gemini-2.5-flash"
 
     # Text embeddings (chunks, captions, queries, OCR)
     text_embedding_model: str = TEXT_EMBEDDING_MODEL

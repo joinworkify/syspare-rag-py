@@ -304,7 +304,7 @@ def _build_rag_config(manual: ManualConfig) -> RagConfig:
     return RagConfig(
         project_id=PROJECT_ID,
         location=LOCATION,
-        model_name="gemini-3.5-flash",
+        model_name="gemini-2.5-flash",
         embedding_size=1408,
         embedding_model_name="multimodalembedding@001",
         image_save_dir=manual.image_dir,
