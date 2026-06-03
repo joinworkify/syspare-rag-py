@@ -61,6 +61,8 @@ LOCATION = _env("LOCATION", "us-central1")
 # Allow disabling S3 sync for local/dev (set DISABLE_S3_SYNC=1).
 DISABLE_S3_SYNC = _env("DISABLE_S3_SYNC", "0")
 INIT_RAG_ON_STARTUP = _env("INIT_RAG_ON_STARTUP", "0")
+INIT_ALL_RAG_ON_STARTUP = _env("INIT_ALL_RAG_ON_STARTUP", "0")
+GEMINI_MODEL = _env("GEMINI_MODEL", "gemini-2.0-flash")
 
 # Manual registry: list of available manuals + default selection.
 manual_registry: ManualRegistry = load_manual_registry_from_env()
@@ -252,7 +254,7 @@ def _build_rag_config(manual: ManualConfig) -> RagConfig:
     return RagConfig(
         project_id=PROJECT_ID,
         location=LOCATION,
-        model_name="gemini-2.0-flash",
+        model_name=GEMINI_MODEL,
         embedding_size=1408,
         embedding_model_name="multimodalembedding@001",
         image_save_dir=manual.image_dir,
@@ -321,14 +323,18 @@ def _get_rag(manual_id: Optional[str] = None) -> MultimodalRAGPipeline:
 
 @app.on_event("startup")
 def _ensure_rag():
-    """Optionally init the default pipeline at startup (fails gracefully)."""
-    if INIT_RAG_ON_STARTUP != "1":
-        # Keep startup fast; RAG will be initialized lazily on first query/build-cache.
-        return
-    try:
-        _get_rag(DEFAULT_MANUAL_ID)
-    except Exception as e:
-        print(f"RAG not ready at startup: {e}")
+    """Optionally init pipelines at startup (fails gracefully)."""
+    if INIT_ALL_RAG_ON_STARTUP == "1":
+        for manual in manual_registry.list():
+            try:
+                _get_rag(manual.manual_id)
+            except Exception as e:
+                print(f"RAG not ready at startup [{manual.manual_id}]: {e}")
+    elif INIT_RAG_ON_STARTUP == "1":
+        try:
+            _get_rag(DEFAULT_MANUAL_ID)
+        except Exception as e:
+            print(f"RAG not ready at startup: {e}")
 
 
 # -----------------------------
