@@ -13,7 +13,7 @@ from pipeline import RagConfig, MultimodalRAGPipeline
 cfg = RagConfig(
     project_id="fortunaii",
     location="us-central1",
-    model_name="gemini-2.0-flash",
+    model_name="gemini-3.5-flash",
     embedding_size=1408,
     embedding_model_name="multimodalembedding@001",  # used to embed OCR chunks
     image_save_dir="./cache_ym358a/images",  # extracted images stored here

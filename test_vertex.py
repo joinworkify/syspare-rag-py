@@ -21,7 +21,7 @@ if CREDS:
     os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = str(cred_path.resolve())
 
 vertexai.init(project=PROJECT_ID, location=LOCATION)
-model = GenerativeModel("gemini-2.0-flash")
+model = GenerativeModel("gemini-3.5-flash")
 
 resp = model.generate_content("Say 'ok' in one word.")
 print(resp.text)

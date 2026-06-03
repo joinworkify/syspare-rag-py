@@ -33,7 +33,7 @@ class Pipeline:
         self.PROJECT_ID = "fortunaii"
         self.LOCATION = "us-central1" # Your project location
         self.client = genai.Client(vertexai=True, project=self.PROJECT_ID, location=self.LOCATION)
-        self.model = "gemini-2.0-flash"
+        self.model = "gemini-3.5-flash"
         self.text_model = GenerativeModel(self.model)
         self.generative_multimodal_model = self.text_model
         self.multimodal_model_flash = self.text_model
