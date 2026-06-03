@@ -79,6 +79,7 @@ Requires `tesseract-ocr` binary + language packs installed.
 | `CORS_ORIGINS` | `http://localhost:5173,...` | Comma-separated allowed CORS origins |
 | `DISABLE_S3_SYNC` | `0` | Set to `1` to skip all S3 sync (local dev without AWS creds) |
 | `INIT_RAG_ON_STARTUP` | `0` | Set to `1` to load the default pipeline at startup (slower start, no cold-start on first query) |
+| `RAG_PIPELINE_CACHE_SIZE` | `1` | Number of manual pipelines to keep in memory. Keep at `1` on small Render instances to avoid OOM when users switch manuals |
 | `RAG_BUILD_WORKERS` | `4` | Concurrent page workers during cache build. Lower if hitting Vertex quota errors |
 
 ---

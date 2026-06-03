@@ -10,6 +10,58 @@ function escapeHtml(s) {
   div.textContent = s;
   return div.innerHTML;
 }
+function renderInlineHtml(s) {
+  return escapeHtml(s).replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+}
+function renderAnswerHtml(answer) {
+  const lines = (answer || '').split(/\r?\n/);
+  let html = '';
+  let listType = null;
+  const closeList = () => {
+    if (listType) {
+      html += `</${listType}>`;
+      listType = null;
+    }
+  };
+  const openList = (type) => {
+    if (listType === type) return;
+    closeList();
+    const cls =
+      type === 'ol'
+        ? 'list-decimal pl-5 my-2 space-y-1'
+        : 'list-disc pl-5 my-2 space-y-1';
+    html += `<${type} class="${cls}">`;
+    listType = type;
+  };
+  lines.forEach((line) => {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      closeList();
+      return;
+    }
+    const ordered = trimmed.match(/^\d+[.)]\s+(.+)$/);
+    if (ordered) {
+      openList('ol');
+      html += `<li>${renderInlineHtml(ordered[1])}</li>`;
+      return;
+    }
+    const bullet = trimmed.match(/^[-*•]\s+(.+)$/);
+    if (bullet) {
+      openList('ul');
+      html += `<li>${renderInlineHtml(bullet[1])}</li>`;
+      return;
+    }
+    closeList();
+    const safety = trimmed.match(/^\**Safety note:\**\s*(.*)$/i);
+    if (safety) {
+      html += `<p class="mt-3"><strong>Safety note:</strong> ${renderInlineHtml(safety[1])}</p>`;
+    } else {
+      html += `<p class="my-1">${renderInlineHtml(trimmed)}</p>`;
+    }
+  });
+  closeList();
+  return html;
+}
 function renderPills(doc, page, score) {
   const parts = [];
   if (doc)
@@ -67,8 +119,10 @@ function renderResults(data) {
   const textsEl = el('api-texts');
   const resultsEl = el('api-results');
   if (!answerEl || !imagesEl || !textsEl || !resultsEl) return;
+  answerEl.classList.remove('whitespace-pre-wrap');
+  answerEl.classList.add('whitespace-normal');
   answerEl.innerHTML = '';
-  answerEl.appendChild(document.createTextNode(data.answer));
+  answerEl.innerHTML = renderAnswerHtml(data.answer);
   imagesEl.innerHTML = data.images.map((img, i) => renderImage(img, i)).join('');
   textsEl.innerHTML = data.texts.map(renderTextChunk).join('');
   resultsEl.classList.remove('hidden');
@@ -143,6 +197,16 @@ async function runQuery() {
   runBtn.classList.add('opacity-70');
   statusEl.textContent = 'Running RAG… (first request can take 1-3 min while RAG loads)';
   statusEl.style.color = '#64748b';
+  const statusSteps = [
+    'Searching the selected manual…',
+    'Checking retrieved clips and diagrams…',
+    'If the first pass is dealer-only, searching wider…',
+  ];
+  let statusStepIndex = 0;
+  const statusTimer = setInterval(() => {
+    statusStepIndex = (statusStepIndex + 1) % statusSteps.length;
+    statusEl.textContent = statusSteps[statusStepIndex];
+  }, 1800);
   if (resultsEl) resultsEl.classList.add('hidden');
   try {
     const file = imageInput?.files?.[0] ?? null;
@@ -173,12 +237,19 @@ async function runQuery() {
       statusEl.style.color = '#b91c1c';
       return;
     }
+    if (data.retrieval_expanded) {
+      statusEl.textContent =
+        data.retrieval_message ??
+        'First pass had insufficient detail, so retrieval was expanded before answering.';
+      await new Promise((resolve) => setTimeout(resolve, 900));
+    }
     renderResults(data);
     statusEl.textContent = '';
   } catch (err) {
     statusEl.textContent = err instanceof Error ? err.message : 'Request failed';
     statusEl.style.color = '#b91c1c';
   } finally {
+    clearInterval(statusTimer);
     runBtn.removeAttribute('disabled');
     runBtn.classList.remove('opacity-70');
   }

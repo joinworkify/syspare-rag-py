@@ -23,12 +23,15 @@ interface QueryRequest {
   top_k_text?: number;
   top_k_img?: number;
   temp?: number;
+  answer_language?: string;
 }
 
 interface QueryResponse {
   answer: string;
   texts: TextChunk[];
   images: ImageMatch[];
+  retrieval_expanded?: boolean;
+  retrieval_message?: string | null;
 }
 
 function el(id: string): HTMLElement | null {
@@ -39,6 +42,67 @@ function escapeHtml(s: string): string {
   const div = document.createElement('div');
   div.textContent = s;
   return div.innerHTML;
+}
+
+function renderApiInlineHtml(s: string): string {
+  return escapeHtml(s).replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+}
+
+function renderApiAnswerHtml(answer: string): string {
+  const lines = (answer || '').split(/\r?\n/);
+  let html = '';
+  let listType: 'ol' | 'ul' | null = null;
+
+  const closeList = (): void => {
+    if (listType) {
+      html += `</${listType}>`;
+      listType = null;
+    }
+  };
+
+  const openList = (type: 'ol' | 'ul'): void => {
+    if (listType === type) return;
+    closeList();
+    const cls =
+      type === 'ol'
+        ? 'list-decimal pl-5 my-2 space-y-1'
+        : 'list-disc pl-5 my-2 space-y-1';
+    html += `<${type} class="${cls}">`;
+    listType = type;
+  };
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      closeList();
+      continue;
+    }
+
+    const ordered = trimmed.match(/^\d+[.)]\s+(.+)$/);
+    if (ordered) {
+      openList('ol');
+      html += `<li>${renderApiInlineHtml(ordered[1])}</li>`;
+      continue;
+    }
+
+    const bullet = trimmed.match(/^[-*•]\s+(.+)$/);
+    if (bullet) {
+      openList('ul');
+      html += `<li>${renderApiInlineHtml(bullet[1])}</li>`;
+      continue;
+    }
+
+    closeList();
+    const safety = trimmed.match(/^\**Safety note:\**\s*(.*)$/i);
+    if (safety) {
+      html += `<p class="mt-3"><strong>Safety note:</strong> ${renderApiInlineHtml(safety[1])}</p>`;
+    } else {
+      html += `<p class="my-1">${renderApiInlineHtml(trimmed)}</p>`;
+    }
+  }
+
+  closeList();
+  return html;
 }
 
 function renderPills(doc?: string | null, page?: number | null, score?: number | null): string {
@@ -80,8 +144,10 @@ function renderResults(data: QueryResponse): void {
   const resultsEl = el('api-results');
   if (!answerEl || !imagesEl || !textsEl || !resultsEl) return;
 
+  answerEl.classList.remove('whitespace-pre-wrap');
+  answerEl.classList.add('whitespace-normal');
   answerEl.innerHTML = '';
-  answerEl.appendChild(document.createTextNode(data.answer));
+  answerEl.innerHTML = renderApiAnswerHtml(data.answer);
 
   imagesEl.innerHTML = data.images.map((img, i) => renderImage(img, i)).join('');
 
@@ -165,8 +231,18 @@ async function runQuery(): Promise<void> {
 
   runBtn.setAttribute('disabled', 'true');
   runBtn.classList.add('opacity-70');
-  statusEl.textContent = 'Running RAG…';
+  statusEl.textContent = 'Searching the selected manual…';
   statusEl.style.color = '#64748b';
+  const statusSteps = [
+    'Searching the selected manual…',
+    'Checking retrieved clips and diagrams…',
+    'If the first pass is dealer-only, searching wider…',
+  ];
+  let statusStepIndex = 0;
+  const statusTimer = window.setInterval(() => {
+    statusStepIndex = (statusStepIndex + 1) % statusSteps.length;
+    statusEl.textContent = statusSteps[statusStepIndex];
+  }, 1800);
   if (resultsEl) resultsEl.classList.add('hidden');
 
   try {
@@ -200,12 +276,20 @@ async function runQuery(): Promise<void> {
       return;
     }
 
+    if (data.retrieval_expanded) {
+      statusEl.textContent =
+        data.retrieval_message ??
+        'First pass had insufficient detail, so retrieval was expanded before answering.';
+      await new Promise((resolve) => setTimeout(resolve, 900));
+    }
+
     renderResults(data as QueryResponse);
     statusEl.textContent = '';
   } catch (err) {
     statusEl.textContent = err instanceof Error ? err.message : 'Request failed';
     statusEl.style.color = '#b91c1c';
   } finally {
+    window.clearInterval(statusTimer);
     runBtn.removeAttribute('disabled');
     runBtn.classList.remove('opacity-70');
   }

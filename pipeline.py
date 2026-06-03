@@ -61,6 +61,36 @@ except Exception:
 # RagConfig lives in syspare_rag.config (re-exported here for backward compatibility).
 
 
+# Sentinel the model emits when retrieved context is too thin to genuinely help.
+# Used to trigger a wider (doubled top-k) retrieval pass before falling back to
+# a "contact your dealer" answer. It is stripped before the answer reaches users.
+INSUFFICIENT_CONTEXT_SENTINEL = "INSUFFICIENT_CONTEXT"
+
+
+def _as_text(value: Any) -> str:
+    """Coerce a model response to a string for inspection."""
+    return value if isinstance(value, str) else str(value or "")
+
+
+def has_insufficient_marker(text: Optional[str]) -> bool:
+    """True if the model flagged the context as insufficient via the sentinel."""
+    if not text:
+        return False
+    return INSUFFICIENT_CONTEXT_SENTINEL.lower() in text.lower()
+
+
+def strip_insufficient_marker(text: Optional[str]) -> str:
+    """Remove the insufficiency sentinel (and trailing punctuation) for display."""
+    if not text:
+        return ""
+    cleaned = re.sub(
+        rf"(?i)\b{INSUFFICIENT_CONTEXT_SENTINEL}\b[\s:.\-]*",
+        "",
+        text,
+    )
+    return cleaned.strip()
+
+
 # -----------------------------
 # Pipeline
 # -----------------------------
@@ -751,26 +781,12 @@ class MultimodalRAGPipeline:
         stream: bool = True,
         include_step_by_step: bool = True,
         answer_language: str = "auto",
+        manual_label: str = "the currently selected manual",
+        available_models: Optional[List[str]] = None,
+        enable_dealer_fallback: bool = True,
+        max_top_n_text: int = 40,
+        max_top_n_images: int = 24,
     ) -> Dict[str, Any]:
-        text_matches = self.search_text(query, top_n=top_n_text, chunk_text=True)
-        image_matches = self.search_images_by_description_text(
-            query, top_n=top_n_images
-        )
-
-        context_text = [value["chunk_text"] for _, value in text_matches.items()]
-        final_context_text = "\n".join(context_text)
-
-        context_images: List[Any] = []
-        for idx, (_, value) in enumerate(image_matches.items()):
-            context_images.extend(
-                [
-                    f"Image {idx+1}: ",
-                    value["image_object"],
-                    "Caption: ",
-                    value["image_description"],
-                ]
-            )
-
         lang_line = self._answer_language_line(answer_language)
         reasoning_line = (
             "Make sure to think thoroughly before answering the question and put the necessary steps "
@@ -779,14 +795,105 @@ class MultimodalRAGPipeline:
             else ""
         )
 
-        prompt = (
-            "Instructions: Compare the images and the text provided as Context: to answer multiple Question:\n"
-            "CRITICAL CITATION RULE: When answering, if you use or reference information from a specific image to support your explanation, "
+        def _generate(tnt: int, tni: int):
+            text_matches = self.search_text(query, top_n=tnt, chunk_text=True)
+            image_matches = self.search_images_by_description_text(query, top_n=tni)
+
+            context_text = [value["chunk_text"] for _, value in text_matches.items()]
+            final_context_text = "\n".join(context_text)
+
+            context_images: List[Any] = []
+            for idx, (_, value) in enumerate(image_matches.items()):
+                context_images.extend(
+                    [
+                        f"Image {idx+1}: ",
+                        value["image_object"],
+                        "Caption: ",
+                        value["image_description"],
+                    ]
+                )
+
+            prompt = self._build_multimodal_prompt(
+                query=query,
+                final_context_text=final_context_text,
+                context_images=context_images,
+                lang_line=lang_line,
+                reasoning_line=reasoning_line,
+                manual_label=manual_label,
+                available_models=available_models,
+            )
+            response = get_gemini_response(
+                self.multimodal_model,
+                model_input=[prompt],
+                stream=stream,
+                generation_config=GenerationConfig(temperature=temperature),
+            )
+            return text_matches, image_matches, prompt, response
+
+        text_matches, image_matches, prompt, response = _generate(top_n_text, top_n_images)
+
+        # Dealer fallback: when the first pass flags insufficient context, retrieve
+        # wider (doubled top-k, capped) and try once more before recommending a dealer.
+        # Only runs for non-streamed answers since we must inspect the text.
+        retrieval_expanded = False
+        context_sufficient = True
+        fallback_active = enable_dealer_fallback and not stream
+
+        if fallback_active and has_insufficient_marker(_as_text(response)):
+            exp_tnt = min(top_n_text * 2, max_top_n_text)
+            exp_tni = min(top_n_images * 2, max_top_n_images)
+            if exp_tnt > top_n_text or exp_tni > top_n_images:
+                retrieval_expanded = True
+                text_matches, image_matches, prompt, response = _generate(exp_tnt, exp_tni)
+            if has_insufficient_marker(_as_text(response)):
+                context_sufficient = False
+
+        if fallback_active:
+            response = strip_insufficient_marker(_as_text(response))
+
+        return {
+            "query": query,
+            "text_matches": text_matches,
+            "image_matches": image_matches,
+            "prompt": prompt,
+            "response": response,
+            "retrieval_expanded": retrieval_expanded,
+            "context_sufficient": context_sufficient,
+        }
+
+    def _build_multimodal_prompt(
+        self,
+        *,
+        query: str,
+        final_context_text: str,
+        context_images: List[Any],
+        lang_line: str,
+        reasoning_line: str,
+        manual_label: str,
+        available_models: Optional[List[str]] = None,
+    ) -> str:
+        available_line = (
+            f"Manuals/models available in this system: {', '.join(available_models)}.\n"
+            if available_models
+            else ""
+        )
+        return (
+            "You are a Yanmar tractor manual assistant. You can only answer from the currently selected manual and retrieved images.\n"
+            f"Selected manual/model context: {manual_label}.\n"
+            f"{available_line}"
+            "You are aware that this chat is scoped to a single manual at a time; you do not have access to other manuals unless the user switches to them.\n\n"
+            "Instructions:\n"
+            "1. Answer the user's question using only the Text Context and Image Context below.\n"
+            "2. Safety guidance should be relevant and proportional. Do not lead every routine answer with generic safety warnings. If the answer involves a severe or specific hazard (fuel vapor, fire, high pressure fluid, jacking/lifting, blades, electrical shock, or similar), keep the procedure safe and add a short final section titled 'Safety note:' with only the specific hazards that apply. For dangerous or high-risk repair work, advise a qualified technician or dealer instead of giving risky instructions.\n"
+            "3. If the user asks about a different tractor/machine model than the selected manual, do NOT reply that information is missing. Instead, explain this chat only covers the selected manual; if the model they want is in the available list above, ask them to switch the manual selector to it; otherwise say that model is currently unavailable.\n"
+            "4. Be practical and concise. Only give checks or steps that are actually supported by the context. Never invent or pad procedures just to avoid saying information is missing.\n"
+            "5. Format procedures as numbered steps when order matters. Use short bullet lists for unordered checks. Keep paragraphs short.\n"
+            f"6. If the context does not contain enough actionable information to genuinely help (and the question IS about the selected manual's machine), begin your reply with the token {INSUFFICIENT_CONTEXT_SENTINEL} on its own first line, then say what is missing and recommend contacting a local Yanmar dealer. Include only specific safety notes when relevant. Do NOT use this token for questions about other machine models (handle those per instruction 3).\n"
+            "7. CRITICAL CITATION RULE: When answering, if you use or reference information from a specific image to support your explanation, "
             "you MUST cite it inline using the format [Image X] where X is the image index number (e.g. [Image 1], [Image 2]). "
             "Always include these inline references if you rely on details or visual elements from the images.\n\n"
             f"{lang_line}"
             f"{reasoning_line}"
-            # 'If unsure, respond, "Not enough context to answer".\n\n'
             "Context:\n"
             " - Text Context:\n"
             f"{final_context_text}\n"
@@ -795,21 +902,6 @@ class MultimodalRAGPipeline:
             f"{query}\n\n"
             "Answer:\n"
         )
-
-        response = get_gemini_response(
-            self.multimodal_model,
-            model_input=[prompt],
-            stream=stream,
-            generation_config=GenerationConfig(temperature=temperature),
-        )
-
-        return {
-            "query": query,
-            "text_matches": text_matches,
-            "image_matches": image_matches,
-            "prompt": prompt,
-            "response": response,
-        }
 
     # -----------------------------
     # Structured diagnostic answer

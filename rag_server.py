@@ -1,4 +1,5 @@
 # rag_server.py
+from collections import OrderedDict
 import os
 import re
 import shutil
@@ -18,7 +19,13 @@ from pydantic import BaseModel
 
 from vertexai.generative_models import GenerationConfig
 
-from pipeline import RagConfig, MultimodalRAGPipeline
+from pipeline import (
+    INSUFFICIENT_CONTEXT_SENTINEL,
+    RagConfig,
+    MultimodalRAGPipeline,
+    has_insufficient_marker,
+    strip_insufficient_marker,
+)
 from syspare_rag.config import (
     ManualConfig,
     ManualRegistry,
@@ -55,6 +62,15 @@ def _env(key: str, default: str) -> str:
     return os.environ.get(key, default).strip()
 
 
+def _env_int(key: str, default: int) -> int:
+    value = _env(key, str(default))
+    try:
+        return int(value)
+    except ValueError:
+        print(f"Invalid {key}={value!r}; using {default}.")
+        return default
+
+
 PROJECT_ID = _env("PROJECT_ID", "fortunaii")
 LOCATION = _env("LOCATION", "us-central1")
 
@@ -63,6 +79,12 @@ DISABLE_S3_SYNC = _env("DISABLE_S3_SYNC", "0")
 INIT_RAG_ON_STARTUP = _env("INIT_RAG_ON_STARTUP", "0")
 INIT_ALL_RAG_ON_STARTUP = _env("INIT_ALL_RAG_ON_STARTUP", "0")
 GEMINI_MODEL = _env("GEMINI_MODEL", "gemini-2.5-flash")
+RAG_PIPELINE_CACHE_SIZE = max(1, _env_int("RAG_PIPELINE_CACHE_SIZE", 1))
+
+# Shown when the first retrieval pass was too thin and the search was widened.
+RETRIEVAL_EXPANDED_MESSAGE = (
+    "First pass had insufficient detail, so retrieval was expanded before answering."
+)
 
 # Manual registry: list of available manuals + default selection.
 manual_registry: ManualRegistry = load_manual_registry_from_env()
@@ -114,8 +136,9 @@ app.mount("/static", StaticFiles(directory=DEFAULT_MANUAL.image_dir), name="stat
 # -----------------------------
 # Per-manual pipeline cache (lazy)
 # -----------------------------
-_pipelines: Dict[str, MultimodalRAGPipeline] = {}
+_pipelines: OrderedDict[str, MultimodalRAGPipeline] = OrderedDict()
 _pipeline_errors: Dict[str, str] = {}
+_pipeline_cache_lock = threading.RLock()
 _pipeline_locks: Dict[str, threading.Lock] = {}
 _pipeline_locks_lock = threading.Lock()
 
@@ -127,12 +150,40 @@ def _get_pipeline_lock(manual_id: str) -> threading.Lock:
         return _pipeline_locks[manual_id]
 
 
+def _get_cached_pipeline(manual_id: str) -> Optional[MultimodalRAGPipeline]:
+    """Return cached pipeline and mark it most recently used."""
+    with _pipeline_cache_lock:
+        cached = _pipelines.get(manual_id)
+        if cached is not None:
+            _pipelines.move_to_end(manual_id)
+        return cached
+
+
+def _remember_pipeline(manual_id: str, rag: MultimodalRAGPipeline) -> None:
+    """Store a pipeline and evict least recently used manuals over the limit."""
+    with _pipeline_cache_lock:
+        _pipelines[manual_id] = rag
+        _pipelines.move_to_end(manual_id)
+
+        while len(_pipelines) > RAG_PIPELINE_CACHE_SIZE:
+            evicted_id, _ = _pipelines.popitem(last=False)
+            print(
+                f"[{evicted_id}] Evicted RAG pipeline from memory "
+                f"(RAG_PIPELINE_CACHE_SIZE={RAG_PIPELINE_CACHE_SIZE})."
+            )
+
+
 def _resolve_manual(manual_id: Optional[str]) -> ManualConfig:
     """Return ManualConfig for an optional manual_id; default if blank."""
     try:
         return manual_registry.get(manual_id)
     except KeyError as exc:
         raise RuntimeError(str(exc))
+
+
+def _available_model_labels() -> List[str]:
+    """Display names of all registered manuals, for cross-model awareness."""
+    return [m.display_name for m in manual_registry.list()]
 
 
 def _sync_from_s3(manual: ManualConfig) -> None:
@@ -170,12 +221,13 @@ def _sync_to_s3(manual: ManualConfig) -> Dict[str, int]:
 
 def _clear_rag_state(manual_id: Optional[str] = None) -> None:
     """Clear in-memory pipeline state for one manual (or all when None)."""
-    if manual_id is None:
-        _pipelines.clear()
-        _pipeline_errors.clear()
-        return
-    _pipelines.pop(manual_id, None)
-    _pipeline_errors.pop(manual_id, None)
+    with _pipeline_cache_lock:
+        if manual_id is None:
+            _pipelines.clear()
+            _pipeline_errors.clear()
+            return
+        _pipelines.pop(manual_id, None)
+        _pipeline_errors.pop(manual_id, None)
 
 
 def _remap_image_paths(rag: MultimodalRAGPipeline, manual: ManualConfig) -> None:
@@ -271,7 +323,7 @@ def _get_rag(manual_id: Optional[str] = None) -> MultimodalRAGPipeline:
     mid = manual.manual_id
 
     # Fast path: already loaded
-    cached = _pipelines.get(mid)
+    cached = _get_cached_pipeline(mid)
     if cached is not None:
         return cached
 
@@ -283,7 +335,7 @@ def _get_rag(manual_id: Optional[str] = None) -> MultimodalRAGPipeline:
     # trigger a full S3 sync + cache load simultaneously.
     with _get_pipeline_lock(mid):
         # Re-check after acquiring lock (another thread may have loaded it)
-        cached = _pipelines.get(mid)
+        cached = _get_cached_pipeline(mid)
         if cached is not None:
             return cached
         err = _pipeline_errors.get(mid)
@@ -314,7 +366,7 @@ def _get_rag(manual_id: Optional[str] = None) -> MultimodalRAGPipeline:
             print(f"[{mid}] Remapping image paths...")
             _remap_image_paths(rag_instance, manual)
             print(f"[{mid}] Pipeline ready.")
-            _pipelines[mid] = rag_instance
+            _remember_pipeline(mid, rag_instance)
             return rag_instance
         except Exception as e:
             _pipeline_errors[mid] = str(e)
@@ -523,6 +575,8 @@ class QueryResponse(BaseModel):
     texts: List[TextChunk]
     images: List[ImageMatch]
     manual_id: Optional[str] = None
+    retrieval_expanded: bool = False
+    retrieval_message: Optional[str] = None
 
 
 class MyanmarQueryRequest(BaseModel):
@@ -543,6 +597,8 @@ class MyanmarQueryResponse(BaseModel):
     english_query: Optional[str] = None
     english_answer: Optional[str] = None
     manual_id: Optional[str] = None
+    retrieval_expanded: bool = False
+    retrieval_message: Optional[str] = None
 
 
 class GenerateQuestionRequest(BaseModel):
@@ -568,6 +624,8 @@ class JapaneseQueryResponse(BaseModel):
     english_query: Optional[str] = None
     english_answer: Optional[str] = None
     manual_id: Optional[str] = None
+    retrieval_expanded: bool = False
+    retrieval_message: Optional[str] = None
 
 
 class QueryWithOptionalImageRequest(BaseModel):
@@ -661,6 +719,7 @@ class ChatResponse(BaseModel):
     texts: List[TextChunk]
     images: List[ImageMatch]
     manual_id: Optional[str] = None
+    retrieval_expanded: bool = False
 
 
 class ManualInfo(BaseModel):
@@ -853,7 +912,7 @@ def api_build_cache(manual_id: Optional[str] = None, skip_existing_images: bool 
         counts = _sync_to_s3(manual)
         counts["images_to_s3"] = n_imgs
         _remap_image_paths(rag_instance, manual)
-        _pipelines[manual.manual_id] = rag_instance
+        _remember_pipeline(manual.manual_id, rag_instance)
         return JSONResponse(
             {
                 "ok": True,
@@ -943,15 +1002,6 @@ def api_query(payload: QueryRequest):
             status_code=503,
         )
 
-    text_matches = rag.search_text(
-        payload.question,
-        top_n=payload.top_k_text,
-        chunk_text=True,
-    )
-    image_matches = rag.search_images_by_description_text(
-        payload.question,
-        top_n=payload.top_k_img,
-    )
     out = rag.answer_multimodal_query(
         payload.question,
         top_n_text=payload.top_k_text,
@@ -960,7 +1010,13 @@ def api_query(payload: QueryRequest):
         stream=False,
         include_step_by_step=False,
         answer_language=payload.answer_language,
+        manual_label=manual.display_name,
+        available_models=_available_model_labels(),
     )
+    # Use the matches from whichever retrieval pass actually answered (may be the
+    # widened fallback pass) so displayed sources match the answer.
+    text_matches = out["text_matches"]
+    image_matches = out["image_matches"]
     answer = out["response"]
     if not isinstance(answer, str):
         answer = str(answer)
@@ -971,11 +1027,14 @@ def api_query(payload: QueryRequest):
     texts_norm = _normalize_text_matches(text_matches)
     images_norm = _normalize_image_matches(image_matches, manual.manual_id)
 
+    retrieval_expanded = bool(out.get("retrieval_expanded"))
     return QueryResponse(
         answer=answer,
         texts=[TextChunk(**t) for t in texts_norm],
         images=[ImageMatch(**img) for img in images_norm],
         manual_id=manual.manual_id,
+        retrieval_expanded=retrieval_expanded,
+        retrieval_message=RETRIEVAL_EXPANDED_MESSAGE if retrieval_expanded else None,
     )
 
 
@@ -1017,15 +1076,6 @@ def api_query_myanmar(payload: MyanmarQueryRequest):
             status_code=503,
         )
 
-    text_matches = rag.search_text(
-        english_query,
-        top_n=payload.top_k_text,
-        chunk_text=True,
-    )
-    image_matches = rag.search_images_by_description_text(
-        english_query,
-        top_n=payload.top_k_img,
-    )
     out = rag.answer_multimodal_query(
         english_query,
         top_n_text=payload.top_k_text,
@@ -1034,7 +1084,11 @@ def api_query_myanmar(payload: MyanmarQueryRequest):
         stream=False,
         include_step_by_step=False,
         answer_language="en",
+        manual_label=manual.display_name,
+        available_models=_available_model_labels(),
     )
+    text_matches = out["text_matches"]
+    image_matches = out["image_matches"]
     english_answer = out["response"]
     if not isinstance(english_answer, str):
         english_answer = str(english_answer)
@@ -1058,6 +1112,7 @@ def api_query_myanmar(payload: MyanmarQueryRequest):
     texts_norm = _normalize_text_matches(text_matches)
     images_norm = _normalize_image_matches(image_matches, manual.manual_id)
 
+    retrieval_expanded = bool(out.get("retrieval_expanded"))
     return MyanmarQueryResponse(
         answer=myanmar_answer,
         texts=[TextChunk(**t) for t in texts_norm],
@@ -1065,6 +1120,8 @@ def api_query_myanmar(payload: MyanmarQueryRequest):
         english_query=english_query if payload.include_intermediate_english else None,
         english_answer=renumbered_english if payload.include_intermediate_english else None,
         manual_id=manual.manual_id,
+        retrieval_expanded=retrieval_expanded,
+        retrieval_message=RETRIEVAL_EXPANDED_MESSAGE if retrieval_expanded else None,
     )
 
 
@@ -1100,15 +1157,6 @@ def api_query_japanese(payload: JapaneseQueryRequest):
             status_code=503,
         )
 
-    text_matches = rag.search_text(
-        english_query,
-        top_n=payload.top_k_text,
-        chunk_text=True,
-    )
-    image_matches = rag.search_images_by_description_text(
-        english_query,
-        top_n=payload.top_k_img,
-    )
     out = rag.answer_multimodal_query(
         english_query,
         top_n_text=payload.top_k_text,
@@ -1117,7 +1165,11 @@ def api_query_japanese(payload: JapaneseQueryRequest):
         stream=False,
         include_step_by_step=False,
         answer_language="en",
+        manual_label=manual.display_name,
+        available_models=_available_model_labels(),
     )
+    text_matches = out["text_matches"]
+    image_matches = out["image_matches"]
     english_answer = out["response"]
     if not isinstance(english_answer, str):
         english_answer = str(english_answer)
@@ -1141,6 +1193,7 @@ def api_query_japanese(payload: JapaneseQueryRequest):
     texts_norm = _normalize_text_matches(text_matches)
     images_norm = _normalize_image_matches(image_matches, manual.manual_id)
 
+    retrieval_expanded = bool(out.get("retrieval_expanded"))
     return JapaneseQueryResponse(
         answer=japanese_answer,
         texts=[TextChunk(**t) for t in texts_norm],
@@ -1148,6 +1201,8 @@ def api_query_japanese(payload: JapaneseQueryRequest):
         english_query=english_query if payload.include_intermediate_english else None,
         english_answer=renumbered_english if payload.include_intermediate_english else None,
         manual_id=manual.manual_id,
+        retrieval_expanded=retrieval_expanded,
+        retrieval_message=RETRIEVAL_EXPANDED_MESSAGE if retrieval_expanded else None,
     )
 
 
@@ -1694,17 +1749,14 @@ def _needs_retrieval(rag, condensed_query: str, history: List[ChatMessage]) -> b
 
 
 def _filter_images_by_citations(image_matches: dict, answer: str):
-    """Return (filtered_image_matches, renumbered_answer).
+    """Return (image_matches, renumbered_answer).
 
-    Keeps only images cited as [Image X] in the answer, then rewrites those
-    citations to sequential 1-based numbers matching the filtered list order.
-    Uses a permissive pattern to match [Image 5], [Image: 5], [image5], etc.
+    Keeps all images (does not filter them out), but still rewrites citations
+    in the answer text to be sequential based on the cited images.
     """
     cited_positions = {int(i) - 1 for i in re.findall(r'\[image[:#\s]*(\d+)\]', answer, re.IGNORECASE)}
     if not cited_positions:
-        return {}, answer
-
-    filtered = {k: v for i, (k, v) in enumerate(image_matches.items()) if i in cited_positions}
+        return image_matches, answer
 
     # Map original 1-based index → new sequential 1-based index
     orig_to_new: dict = {}
@@ -1718,7 +1770,7 @@ def _filter_images_by_citations(image_matches: dict, answer: str):
         return f'[Image {orig_to_new.get(int(m.group(1)), int(m.group(1)))}]'
 
     renumbered_answer = re.sub(r'\[image[:#\s]*(\d+)\]', _replace, answer, flags=re.IGNORECASE)
-    return filtered, renumbered_answer
+    return image_matches, renumbered_answer
 
 
 @app.post("/api/chat", response_model=ChatResponse)
@@ -1748,10 +1800,7 @@ def api_chat(payload: ChatRequest):
     for idx, t in enumerate(text_matches.values()):
         context_str += f"Manual Clip [{idx+1}]:\n{t.get('chunk_text', '')}\n\n"
 
-    context_images_str = ""
-    for idx, img in enumerate(image_matches.values()):
-        caption = img.get("image_description") or img.get("img_desc") or ""
-        context_images_str += f"Image {idx+1}:\nCaption: {caption}\n\n"
+    needs_retrieval = _needs_retrieval(rag, search_query, payload.history)
 
     history_str = ""
     for msg in payload.history:
@@ -1768,34 +1817,72 @@ def api_chat(payload: ChatRequest):
     else:
         lang_instruction = "Write your response in the language of the farmer's latest query (e.g. English, Myanmar, or Japanese)."
 
-    system_prompt = (
-        "You are an empathetic, expert tractor technician and farmer's advisor.\n"
-        "Your goal is to guide the farmer safely and step-by-step through their troubleshooting scenario.\n\n"
-        "Guidelines:\n"
-        "1. Keep answers concise, extremely practical, and structured as steps or simple recommendations.\n"
-        "2. Keep a friendly, helpful tone to support the farmer or mechanic.\n"
-        "3. Only use instructions from the provided Operation Manual Clips or reference details in the Retrieved Images below.\n"
-        "4. CRITICAL IMAGE CITATION RULE: If you use or refer to details, instructions, or visuals from a retrieved image to support your explanation, "
-        "you MUST cite it inline using the format [Image X] where X is the image index (e.g. [Image 1], [Image 2]). Only cite an image if it is relevant to the answer.\n"
-        "5. CRITICAL MANUAL CLIP CITATION RULE: Do NOT EVER cite, print, or reference any '[Manual Clip X]' or 'Manual Clip' indexes/tags in your response. "
-        "Do not mention manual clip numbers. Speak naturally as an advisor, using the manual clip text silently as your background knowledge. "
-        "If the manual clips do not contain the answer, gently instruct the farmer to perform general safety steps and check in with their local dealer.\n"
-        f"6. LANGUAGE RULE: {lang_instruction}\n\n"
-        f"Operation Manual Clips:\n{context_str}\n"
-        f"Retrieved Images Context:\n{context_images_str}\n"
-        f"Conversation History:\n{history_str}"
-        f"Farmer's Latest Query: {payload.question}\n\n"
-        "Tractor Assistant Response:"
+    available_models = _available_model_labels()
+    available_line = (
+        f"Manuals/models available in this system: {', '.join(available_models)}.\n"
+        if available_models
+        else ""
     )
 
-    # 4. Generate Answer
-    out = get_gemini_response(
-        rag.text_model,
-        model_input=system_prompt,
-        stream=False,
-        generation_config=GenerationConfig(temperature=payload.temp, max_output_tokens=1024),
-    )
-    answer = (out or "").strip()
+    def _run_chat_pass(tk_text: int, tk_img: int):
+        if needs_retrieval:
+            tm = rag.search_text(search_query, top_n=tk_text, chunk_text=True)
+            im = rag.search_images_by_description_text(search_query, top_n=tk_img)
+        else:
+            tm, im = {}, {}
+
+        context_str = ""
+        for idx, t in enumerate(tm.values()):
+            context_str += f"Manual Clip [{idx+1}]:\n{t.get('chunk_text', '')}\n\n"
+
+        context_images_str = ""
+        for idx, img in enumerate(im.values()):
+            caption = img.get("image_description") or img.get("img_desc") or ""
+            context_images_str += f"Image {idx+1}:\nCaption: {caption}\n\n"
+
+        system_prompt = (
+            "You are an empathetic, expert tractor technician and farmer's advisor.\n"
+            f"You are advising specifically on: {manual.display_name}. "
+            f"{available_line}"
+            "You can only help with the currently selected manual; you do not have access to other manuals unless the user switches to them.\n"
+            "Your goal is to guide the farmer safely and step-by-step through their troubleshooting scenario.\n\n"
+            "Guidelines:\n"
+            "1. Keep answers concise, extremely practical, and structured as steps or simple recommendations.\n"
+            "2. Keep a friendly, helpful tone to support the farmer or mechanic.\n"
+            "3. Safety guidance should be relevant and proportional. Do not lead every routine answer with generic safety warnings. If the answer involves a severe or specific hazard (fuel vapor, fire, high pressure fluid, jacking/lifting, blades, electrical shock, or similar), keep the procedure safe and add a short final section titled 'Safety note:' with only the specific hazards that apply. For dangerous or high-risk repair work, advise a qualified technician or dealer instead of giving risky instructions.\n"
+            "4. SCOPE: If the farmer asks about a different tractor/machine model than the selected manual, do NOT say information is missing. Instead, tell them this chat only covers the selected manual; if the model they want is in the available list above, ask them to switch the manual selector to it; otherwise say that model is currently unavailable.\n"
+            "5. Only use instructions from the provided Operation Manual Clips or details in the Retrieved Images. Do not invent or pad procedures just to fill space.\n"
+            "6. Format procedures as numbered steps when order matters. Use short bullet lists for unordered checks. Keep paragraphs short.\n"
+            "7. CRITICAL IMAGE CITATION RULE: If you use or refer to details, instructions, or visuals from a retrieved image, you MUST cite it inline using [Image X] where X is the image index (e.g. [Image 1]). Only cite an image if it is relevant.\n"
+            "8. CRITICAL MANUAL CLIP CITATION RULE: Do NOT EVER cite, print, or reference any '[Manual Clip X]' or 'Manual Clip' indexes/tags. Speak naturally, using the clip text silently as background knowledge.\n"
+            f"9. INSUFFICIENT INFO: If the manual clips do not contain enough actionable information to genuinely help (and the question IS about the selected machine), begin your reply with the token {INSUFFICIENT_CONTEXT_SENTINEL} on its own first line, then say what is missing and advise contacting a local dealer. Include only specific safety notes when relevant. Do NOT use this token for questions about other machine models (handle those per guideline 4).\n"
+            f"10. LANGUAGE RULE: {lang_instruction}\n\n"
+            f"Operation Manual Clips:\n{context_str}\n"
+            f"Retrieved Images Context:\n{context_images_str}\n"
+            f"Conversation History:\n{history_str}"
+            f"Farmer's Latest Query: {payload.question}\n\n"
+            "Tractor Assistant Response:"
+        )
+
+        out = get_gemini_response(
+            rag.text_model,
+            model_input=system_prompt,
+            stream=False,
+            generation_config=GenerationConfig(temperature=payload.temp, max_output_tokens=1024),
+        )
+        return tm, im, (out or "").strip()
+
+    # 2-4. First pass, with a widened dealer-fallback pass if context was too thin.
+    text_matches, image_matches, answer = _run_chat_pass(payload.top_k_text, payload.top_k_img)
+    retrieval_expanded = False
+    if needs_retrieval and has_insufficient_marker(answer):
+        exp_text = min(payload.top_k_text * 2, 40)
+        exp_img = min(payload.top_k_img * 2, 24)
+        if exp_text > payload.top_k_text or exp_img > payload.top_k_img:
+            retrieval_expanded = True
+            text_matches, image_matches, answer = _run_chat_pass(exp_text, exp_img)
+
+    answer = strip_insufficient_marker(answer)
 
     # Only return images actually cited; renumber citations to match filtered order
     image_matches, answer = _filter_images_by_citations(image_matches, answer)
@@ -1816,6 +1903,7 @@ def api_chat(payload: ChatRequest):
         texts=[TextChunk(**t) for t in texts_norm],
         images=[ImageMatch(**img) for img in images_norm],
         manual_id=manual.manual_id,
+        retrieval_expanded=retrieval_expanded,
     )
 
 

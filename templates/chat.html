@@ -68,7 +68,7 @@
         class="w-80 bg-slate-950/90 border-r border-slate-900 flex flex-col h-full shrink-0 transition-all duration-300 relative z-20">
         <!-- Sidebar Header -->
         <div class="p-4 border-b border-slate-900 flex justify-between items-center">
-            <button onclick="startNewChat()"
+            <button id="new-chat-btn" onclick="startNewChat()"
                 class="flex-1 flex items-center justify-center gap-2 py-2 px-4 rounded-xl bg-emerald-950/40 border border-emerald-500/25 hover:border-emerald-500/55 hover:bg-emerald-950/60 text-emerald-400 text-sm font-semibold transition">
                 <span>➕</span> New Chat
             </button>
@@ -85,7 +85,7 @@
 
         <!-- Sidebar Footer -->
         <div class="p-4 border-t border-slate-900 space-y-2">
-            <button onclick="clearAllLogs()"
+            <button id="clear-logs-btn" onclick="clearAllLogs()"
                 class="w-full py-2 px-4 rounded-lg bg-slate-900 hover:bg-red-950/20 border border-slate-800 hover:border-red-900/30 text-slate-400 hover:text-red-400 text-xs font-medium transition flex items-center justify-center gap-2">
                 <span>🗑️</span> Clear Logs
             </button>
@@ -104,6 +104,17 @@
             title="Toggle Sidebar">
             <span>📂</span>
         </button>
+
+        <!-- Floating Language Switcher -->
+        <div class="absolute right-4 top-4 z-30">
+            <select id="lang-switcher" onchange="switchLanguage(this.value)"
+                class="rounded-xl border border-slate-800 bg-slate-900/80 hover:bg-slate-900/100 text-slate-300 font-semibold px-3 py-1.5 text-xs transition duration-200 focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500 cursor-pointer">
+                <option value="en">English</option>
+                <option value="my">Myanmar</option>
+                <option value="ja">Japanese</option>
+                <option value="zh">Chinese</option>
+            </select>
+        </div>
 
         <!-- Center: Interactive Chat Interface -->
         <section class="flex-1 flex flex-col h-full justify-between bg-slate-950 relative">
@@ -125,13 +136,13 @@
                             class="inline-flex p-3 rounded-2xl bg-emerald-950/40 border border-emerald-500/20 text-3xl text-emerald-400 animate-pulse">
                             🔧
                         </div>
-                        <h2
-                            class="text-3xl font-extrabold tracking-tight bg-gradient-to-r from-emerald-400 via-teal-200 to-emerald-300 bg-clip-text text-transparent">
-                            Yanmar Tractor Service Assistant
+                        <h2 id="welcome-title"
+                            class="text-3xl font-extrabold tracking-tight bg-gradient-to-r from-emerald-500 via-teal-400 to-emerald-600 bg-clip-text text-transparent">
+                            Yanmar Assistant
                         </h2>
-                        <p class="text-slate-400 max-w-md mx-auto text-sm leading-relaxed">
-                            A multi-turn conversational advisor trained on Yanmar service manuals. Describe your issue
-                            or symptom below.
+                        <p id="welcome-desc" class="text-slate-400 max-w-md mx-auto text-sm leading-relaxed">
+                            Ask a question or describe your tractor's symptoms below to get step-by-step diagnostic and
+                            repair guidance.
                         </p>
                     </div>
 
@@ -252,6 +263,48 @@
         let activeSessionTitle = "";
         let savedSessions = {};
 
+        const translations = {
+            en: {
+                welcomeTitle: "Yanmar Assistant",
+                welcomeDesc: "Ask a question or describe your tractor's symptoms below to get step-by-step diagnostic and repair guidance.",
+                newChat: "New Chat",
+                clearLogs: "Clear Logs"
+            },
+            my: {
+                welcomeTitle: "Yanmar အကူစနစ်",
+                welcomeDesc: "အောက်တွင် မေးခွန်းမေးမြန်းပါ သို့မဟုတ် ထွန်စက်၏ ချို့ယွင်းချက်ကို ဖော်ပြပြီး အဆင့်ဆင့် ပြုပြင်နည်း လမ်းညွှန်ချက်များကို ရယူပါ။",
+                newChat: "စကားဝိုင်းအသစ်",
+                clearLogs: "မှတ်တမ်းဖျက်ပါ"
+            },
+            ja: {
+                welcomeTitle: "ヤンマー アシスタント",
+                welcomeDesc: "トラクターの症状や質問を下記に入力すると、ステップバイステップで診断と修理のガイドを表示します。",
+                newChat: "新規チャット",
+                clearLogs: "履歴をクリア"
+            },
+            zh: {
+                welcomeTitle: "洋马 助手",
+                welcomeDesc: "在下方输入您拖拉机的问题或症状，即可获取逐步诊断和维修指南。",
+                newChat: "新聊天",
+                clearLogs: "清除日志"
+            }
+        };
+
+        function switchLanguage(lang) {
+            const t = translations[lang] || translations.en;
+            document.getElementById('welcome-title').innerText = t.welcomeTitle;
+            document.getElementById('welcome-desc').innerText = t.welcomeDesc;
+
+            const newChatBtn = document.getElementById('new-chat-btn');
+            if (newChatBtn) {
+                newChatBtn.innerHTML = `<span>➕</span> ${t.newChat}`;
+            }
+            const clearLogsBtn = document.getElementById('clear-logs-btn');
+            if (clearLogsBtn) {
+                clearLogsBtn.innerHTML = `<span>🗑️</span> ${t.clearLogs}`;
+            }
+        }
+
         // DOM elements
         const chatForm = document.getElementById('chat-form');
         const chatInput = document.getElementById('chat-input');
@@ -323,6 +376,18 @@
 
             // Injected Loader / Pulsing waiting state
             const loadingBubbleId = appendMessage('assistant', '', true);
+            const loadingSteps = [
+                'Searching the selected manual...',
+                'Checking retrieved clips and diagrams...',
+                'If the first pass is dealer-only, searching wider...'
+            ];
+            let loadingStepIndex = 0;
+            const loadingTimer = setInterval(() => {
+                const status = document.querySelector(`#${loadingBubbleId} .retry-status`);
+                if (!status) return;
+                loadingStepIndex = (loadingStepIndex + 1) % loadingSteps.length;
+                status.textContent = loadingSteps[loadingStepIndex];
+            }, 1800);
 
             try {
                 const response = await fetch('/api/chat', {
@@ -339,6 +404,14 @@
 
                 // Clear the loading indicator
                 const loadingBubble = document.getElementById(loadingBubbleId);
+                clearInterval(loadingTimer);
+                if (loadingBubble && data.retrieval_expanded) {
+                    const status = loadingBubble.querySelector('.retry-status');
+                    if (status) {
+                        status.textContent = 'First pass had insufficient detail. Searching wider manual context...';
+                    }
+                    await new Promise(resolve => setTimeout(resolve, 800));
+                }
                 if (loadingBubble) loadingBubble.remove();
 
                 // Append assistant's answer
@@ -354,6 +427,7 @@
                 saveSessionToStorage(activeSessionId, activeSessionTitle, chatHistory, data.texts, data.images);
 
             } catch (err) {
+                clearInterval(loadingTimer);
                 const loadingBubble = document.getElementById(loadingBubbleId);
                 if (loadingBubble) loadingBubble.remove();
                 appendMessage('assistant', 'Sorry, I failed to retrieve data from the diagnostic hub. Please check your cloud server or Vertex AI credentials.');
@@ -407,6 +481,72 @@
             }
         }
 
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text || '';
+            return div.innerHTML;
+        }
+
+        function renderInlineHtml(text) {
+            return escapeHtml(text).replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+        }
+
+        function renderMessageHtml(content) {
+            const lines = (content || '').split(/\r?\n/);
+            let html = '';
+            let listType = null;
+
+            function closeList() {
+                if (listType) {
+                    html += `</${listType}>`;
+                    listType = null;
+                }
+            }
+
+            function openList(type) {
+                if (listType === type) return;
+                closeList();
+                const cls = type === 'ol'
+                    ? 'list-decimal pl-5 my-2 space-y-1 text-sm leading-relaxed text-slate-100'
+                    : 'list-disc pl-5 my-2 space-y-1 text-sm leading-relaxed text-slate-100';
+                html += `<${type} class="${cls}">`;
+                listType = type;
+            }
+
+            lines.forEach((line) => {
+                const trimmed = line.trim();
+                if (!trimmed) {
+                    closeList();
+                    return;
+                }
+
+                const ordered = trimmed.match(/^\d+[.)]\s+(.+)$/);
+                if (ordered) {
+                    openList('ol');
+                    html += `<li>${renderInlineHtml(ordered[1])}</li>`;
+                    return;
+                }
+
+                const bullet = trimmed.match(/^[-*•]\s+(.+)$/);
+                if (bullet) {
+                    openList('ul');
+                    html += `<li>${renderInlineHtml(bullet[1])}</li>`;
+                    return;
+                }
+
+                closeList();
+                const safety = trimmed.match(/^\**Safety note:\**\s*(.*)$/i);
+                if (safety) {
+                    html += `<p class="text-sm leading-relaxed text-slate-100 mt-3"><strong>Safety note:</strong> ${renderInlineHtml(safety[1])}</p>`;
+                } else {
+                    html += `<p class="text-sm leading-relaxed text-slate-100 my-1">${renderInlineHtml(trimmed)}</p>`;
+                }
+            });
+
+            closeList();
+            return html || '<p class="text-sm leading-relaxed text-slate-100"></p>';
+        }
+
         // Inject messaging bubbles dynamically into chat window
         function appendMessage(role, content, isLoading = false) {
             const bubbleId = 'bubble_' + generateUUID();
@@ -429,17 +569,20 @@
             if (isLoading) {
                 // Return pulsing loader inside assistant bubble
                 messageBody.innerHTML = `
-                    <div class="flex gap-1.5 items-center py-2 px-1">
-                        <div class="w-2 h-2 rounded-full bg-emerald-400 animate-bounce" style="animation-delay: 0s"></div>
-                        <div class="w-2 h-2 rounded-full bg-emerald-400 animate-bounce" style="animation-delay: 0.15s"></div>
-                        <div class="w-2 h-2 rounded-full bg-emerald-400 animate-bounce" style="animation-delay: 0.3s"></div>
+                    <div class="flex flex-col gap-2 py-2 px-1">
+                        <div class="flex gap-1.5 items-center">
+                            <div class="w-2 h-2 rounded-full bg-emerald-400 animate-bounce" style="animation-delay: 0s"></div>
+                            <div class="w-2 h-2 rounded-full bg-emerald-400 animate-bounce" style="animation-delay: 0.15s"></div>
+                            <div class="w-2 h-2 rounded-full bg-emerald-400 animate-bounce" style="animation-delay: 0.3s"></div>
+                        </div>
+                        <div class="retry-status text-xs text-slate-400 animate-pulse">Searching the selected manual...</div>
                     </div>
                 `;
             } else {
-                const textPara = document.createElement('p');
-                textPara.className = 'text-sm whitespace-pre-line leading-relaxed text-slate-100';
-                textPara.innerText = content;
-                messageBody.appendChild(textPara);
+                const textWrap = document.createElement('div');
+                textWrap.className = 'space-y-1 whitespace-normal';
+                textWrap.innerHTML = renderMessageHtml(content);
+                messageBody.appendChild(textWrap);
             }
 
             bubble.appendChild(avatar);
