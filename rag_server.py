@@ -1,5 +1,6 @@
 # rag_server.py
 from collections import OrderedDict
+import json
 import os
 import re
 import shutil
@@ -37,6 +38,7 @@ load_dotenv()
 
 try:
     from s3_storage import (
+        delete_manual_from_s3,
         download_manual_cache_from_s3,
         download_manual_pdfs_from_s3,
         is_s3_configured,
@@ -53,6 +55,7 @@ except ImportError:
     upload_manual_cache_to_s3 = lambda *a, **k: 0
     upload_manual_pdfs_to_s3 = lambda *a, **k: 0
     upload_manual_pdf_file_to_s3 = lambda *a, **k: False
+    delete_manual_from_s3 = lambda *a, **k: 0
 
 
 # -----------------------------
@@ -79,11 +82,15 @@ DISABLE_S3_SYNC = _env("DISABLE_S3_SYNC", "0")
 INIT_RAG_ON_STARTUP = _env("INIT_RAG_ON_STARTUP", "0")
 INIT_ALL_RAG_ON_STARTUP = _env("INIT_ALL_RAG_ON_STARTUP", "0")
 GEMINI_MODEL = _env("GEMINI_MODEL", "gemini-2.5-flash")
-RAG_PIPELINE_CACHE_SIZE = max(1, _env_int("RAG_PIPELINE_CACHE_SIZE", 1))
-
 # Shown when the first retrieval pass was too thin and the search was widened.
 RETRIEVAL_EXPANDED_MESSAGE = (
     "First pass had insufficient detail, so retrieval was expanded before answering."
+)
+
+# Path to the manuals registry JSON (written by add-manual API)
+_MANUALS_JSON_PATH: Path = (
+    Path(_env("MANUALS_JSON", "")) if _env("MANUALS_JSON", "") else
+    Path(__file__).resolve().parent / "manuals" / "manuals.json"
 )
 
 # Manual registry: list of available manuals + default selection.
@@ -97,14 +104,25 @@ CACHE_DIR = _env("CACHE_DIR", DEFAULT_MANUAL.cache_dir)
 IMAGE_DIR = _env("IMAGE_DIR", DEFAULT_MANUAL.image_dir)
 OCR_LANG = _env("OCR_LANG", DEFAULT_MANUAL.ocr_lang or "mya+eng")
 
-
+# set for the cache size
+RAG_PIPELINE_CACHE_SIZE = max(
+    1,
+    _env_int("RAG_PIPELINE_CACHE_SIZE", 0)
+    or (
+        len(manual_registry.list())
+        if _env("INIT_ALL_RAG_ON_STARTUP", "0") == "1"
+        else 1
+    ),
+)
 # -----------------------------
 # FastAPI setup
 # -----------------------------
 app = FastAPI(title="Syspare RAG Python")
 
 # CORS: allow TSX/viewer on different origin (e.g. localhost:5173 or your frontend)
-_cors_origins = _env("CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173").strip()
+_cors_origins = _env(
+    "CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173"
+).strip()
 _cors_list = [o.strip() for o in _cors_origins.split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
@@ -141,6 +159,10 @@ _pipeline_errors: Dict[str, str] = {}
 _pipeline_cache_lock = threading.RLock()
 _pipeline_locks: Dict[str, threading.Lock] = {}
 _pipeline_locks_lock = threading.Lock()
+
+# Background training jobs: job_id → {status, progress, message, manual_id}
+_training_jobs: Dict[str, dict] = {}
+_training_jobs_lock = threading.Lock()
 
 
 def _get_pipeline_lock(manual_id: str) -> threading.Lock:
@@ -250,7 +272,9 @@ def _remap_image_paths(rag: MultimodalRAGPipeline, manual: ManualConfig) -> None
             return value
         original = Path(str(value))
         # If already pointing at a real file under image_dir, keep it.
-        candidate = (img_root / original.name) if not original.is_absolute() else original
+        candidate = (
+            (img_root / original.name) if not original.is_absolute() else original
+        )
         try:
             if candidate.exists():
                 return str(candidate)
@@ -277,7 +301,11 @@ def _upload_images_to_s3_and_rewrite(
     if df is None or "img_path" not in df.columns:
         return 0
 
-    total = int((df["img_path"].notna() & ~df["img_path"].astype(str).str.startswith("http")).sum())
+    total = int(
+        (
+            df["img_path"].notna() & ~df["img_path"].astype(str).str.startswith("http")
+        ).sum()
+    )
     if total == 0:
         return 0
     count = 0
@@ -291,7 +319,9 @@ def _upload_images_to_s3_and_rewrite(
         try:
             url = upload_image_to_s3(manual.manual_id, str(value))
             count += 1
-            _print_progress(f"[{manual.manual_id}] S3 upload", count, total, _upload_start)
+            _print_progress(
+                f"[{manual.manual_id}] S3 upload", count, total, _upload_start
+            )
             return url
         except Exception as exc:
             print(f"\nWarning: failed to upload image {value} to S3: {exc}")
@@ -347,7 +377,9 @@ def _get_rag(manual_id: Optional[str] = None) -> MultimodalRAGPipeline:
             cfg = _build_rag_config(manual)
             rag_instance = MultimodalRAGPipeline(cfg)
             # Try to load cache first; if missing, build from PDFs.
-            if not rag_instance.load_cache(manual.cache_dir, rebuild_image_objects=False):
+            if not rag_instance.load_cache(
+                manual.cache_dir, rebuild_image_objects=False
+            ):
                 print(f"[{mid}] Metadata cache not found. Building metadata...")
                 rag_instance.build_metadata(
                     pdf_folder_path=manual.pdf_folder,
@@ -377,20 +409,100 @@ def _get_rag(manual_id: Optional[str] = None) -> MultimodalRAGPipeline:
 def _ensure_rag():
     """Warm up pipelines in background so health checks pass immediately."""
     if INIT_ALL_RAG_ON_STARTUP == "1":
+
         def _warmup_all():
             for manual in manual_registry.list():
                 try:
                     _get_rag(manual.manual_id)
                 except Exception as e:
                     print(f"[{manual.manual_id}] RAG warmup failed: {e}")
+
         threading.Thread(target=_warmup_all, daemon=True).start()
     elif INIT_RAG_ON_STARTUP == "1":
+
         def _warmup():
             try:
                 _get_rag(DEFAULT_MANUAL_ID)
             except Exception as e:
                 print(f"[{DEFAULT_MANUAL_ID}] RAG warmup failed: {e}")
+
         threading.Thread(target=_warmup, daemon=True).start()
+
+
+def _run_training_job(job_id: str, manual: ManualConfig) -> None:
+    """Background thread: run full build_metadata pipeline with phase progress updates."""
+
+    def _set(progress: int, message: str, status: str = "running") -> None:
+        with _training_jobs_lock:
+            if job_id in _training_jobs:
+                _training_jobs[job_id].update(
+                    {"progress": progress, "message": message, "status": status}
+                )
+
+    try:
+        # Phase 1: sync from S3
+        _set(0, "Syncing from S3...")
+        _sync_from_s3(manual)
+
+        # Phase 2: clear old state, build config + pipeline object
+        _set(10, "Clearing previous pipeline state...")
+        _clear_rag_state(manual.manual_id)
+        cfg = _build_rag_config(manual)
+        rag_instance = MultimodalRAGPipeline(cfg)
+
+        # Phase 3: build_metadata (blocking, potentially long)
+        # Ticker thread simulates incremental progress 15→72% during extraction
+        _set(15, "Extracting text and images from PDFs...")
+        _stop_ticker = threading.Event()
+
+        def _ticker():
+            step = 0
+            max_steps = 57  # 15→72 over ~171s (3s × 57)
+            while not _stop_ticker.is_set() and step < max_steps:
+                time.sleep(3)
+                step += 1
+                with _training_jobs_lock:
+                    if job_id in _training_jobs:
+                        cur = _training_jobs[job_id].get("progress", 15)
+                        if cur < 72:
+                            _training_jobs[job_id]["progress"] = min(72, 15 + step)
+
+        ticker = threading.Thread(target=_ticker, daemon=True)
+        ticker.start()
+        try:
+            rag_instance.build_metadata(
+                pdf_folder_path=manual.pdf_folder,
+                cache_dir=manual.cache_dir,
+                force_rebuild=True,
+                generation_config=GenerationConfig(temperature=0.2),
+                ocr_fallback=True,
+                image_save_dir=manual.image_dir,
+                skip_existing_images=False,
+            )
+        finally:
+            _stop_ticker.set()
+
+        # Phase 4: upload images to S3
+        _set(75, "Uploading extracted images to S3...")
+        n_imgs = _upload_images_to_s3_and_rewrite(rag_instance, manual)
+
+        # Phase 5: sync cache to S3
+        _set(85, "Syncing cache to S3...")
+        counts = _sync_to_s3(manual)
+        counts["images_to_s3"] = n_imgs
+
+        # Phase 6: remap paths + cache pipeline
+        _set(95, "Finalizing pipeline...")
+        _remap_image_paths(rag_instance, manual)
+        _remember_pipeline(manual.manual_id, rag_instance)
+
+        _set(100, "Training complete!", status="done")
+    except Exception as exc:
+        with _training_jobs_lock:
+            if job_id in _training_jobs:
+                _training_jobs[job_id].update(
+                    {"status": "error", "message": str(exc)}
+                )
 
 
 # -----------------------------
@@ -482,9 +594,7 @@ def _rewrite_myanmar_to_english_query(
     return (out or "").strip()
 
 
-def _english_answer_to_myanmar(
-    rag: MultimodalRAGPipeline, english_answer: str
-) -> str:
+def _english_answer_to_myanmar(rag: MultimodalRAGPipeline, english_answer: str) -> str:
     """Translate/summarize the English RAG answer into Myanmar for the user."""
     instruction = (
         "Translate the following English technical answer into natural Myanmar (Burmese). "
@@ -522,9 +632,7 @@ def _rewrite_japanese_to_english_query(
     return (out or "").strip()
 
 
-def _english_answer_to_japanese(
-    rag: MultimodalRAGPipeline, english_answer: str
-) -> str:
+def _english_answer_to_japanese(rag: MultimodalRAGPipeline, english_answer: str) -> str:
     """Translate/summarize the English RAG answer into Japanese for the user."""
     instruction = (
         "Translate the following English technical answer into natural Japanese. "
@@ -882,7 +990,9 @@ def api_clean_cache(manual_id: Optional[str] = None):
 
 
 @app.post("/api/build-cache")
-def api_build_cache(manual_id: Optional[str] = None, skip_existing_images: bool = False):
+def api_build_cache(
+    manual_id: Optional[str] = None, skip_existing_images: bool = False
+):
     """Force rebuild metadata for one manual from PDFs and sync cache + PDFs to S3.
 
     skip_existing_images=true: skip image extraction for PDFs that already have
@@ -1072,7 +1182,9 @@ def api_query_myanmar(payload: MyanmarQueryRequest):
     english_query = _rewrite_myanmar_to_english_query(rag, q_raw)
     if not english_query or english_query == "Exception occurred":
         return JSONResponse(
-            {"detail": "Failed to rewrite question to English. Try again or check Vertex AI / Gemini."},
+            {
+                "detail": "Failed to rewrite question to English. Try again or check Vertex AI / Gemini."
+            },
             status_code=503,
         )
 
@@ -1095,17 +1207,23 @@ def api_query_myanmar(payload: MyanmarQueryRequest):
 
     if not english_answer.strip() or english_answer.strip() == "Exception occurred":
         return JSONResponse(
-            {"detail": "RAG answer generation failed. Try again or check Vertex AI / Gemini."},
+            {
+                "detail": "RAG answer generation failed. Try again or check Vertex AI / Gemini."
+            },
             status_code=503,
         )
 
     # Filter images to only those cited in the English answer, then renumber
-    image_matches, renumbered_english = _filter_images_by_citations(image_matches, english_answer)
+    image_matches, renumbered_english = _filter_images_by_citations(
+        image_matches, english_answer
+    )
 
     myanmar_answer = _english_answer_to_myanmar(rag, renumbered_english)
     if not myanmar_answer or myanmar_answer == "Exception occurred":
         return JSONResponse(
-            {"detail": "Failed to translate answer to Myanmar. Try again or check Vertex AI / Gemini."},
+            {
+                "detail": "Failed to translate answer to Myanmar. Try again or check Vertex AI / Gemini."
+            },
             status_code=503,
         )
 
@@ -1118,7 +1236,9 @@ def api_query_myanmar(payload: MyanmarQueryRequest):
         texts=[TextChunk(**t) for t in texts_norm],
         images=[ImageMatch(**img) for img in images_norm],
         english_query=english_query if payload.include_intermediate_english else None,
-        english_answer=renumbered_english if payload.include_intermediate_english else None,
+        english_answer=(
+            renumbered_english if payload.include_intermediate_english else None
+        ),
         manual_id=manual.manual_id,
         retrieval_expanded=retrieval_expanded,
         retrieval_message=RETRIEVAL_EXPANDED_MESSAGE if retrieval_expanded else None,
@@ -1153,7 +1273,9 @@ def api_query_japanese(payload: JapaneseQueryRequest):
     english_query = _rewrite_japanese_to_english_query(rag, q_raw)
     if not english_query or english_query == "Exception occurred":
         return JSONResponse(
-            {"detail": "Failed to rewrite question to English. Try again or check Vertex AI / Gemini."},
+            {
+                "detail": "Failed to rewrite question to English. Try again or check Vertex AI / Gemini."
+            },
             status_code=503,
         )
 
@@ -1176,17 +1298,23 @@ def api_query_japanese(payload: JapaneseQueryRequest):
 
     if not english_answer.strip() or english_answer.strip() == "Exception occurred":
         return JSONResponse(
-            {"detail": "RAG answer generation failed. Try again or check Vertex AI / Gemini."},
+            {
+                "detail": "RAG answer generation failed. Try again or check Vertex AI / Gemini."
+            },
             status_code=503,
         )
 
     # Filter images to only those cited in the English answer, then renumber
-    image_matches, renumbered_english = _filter_images_by_citations(image_matches, english_answer)
+    image_matches, renumbered_english = _filter_images_by_citations(
+        image_matches, english_answer
+    )
 
     japanese_answer = _english_answer_to_japanese(rag, renumbered_english)
     if not japanese_answer or japanese_answer == "Exception occurred":
         return JSONResponse(
-            {"detail": "Failed to translate answer to Japanese. Try again or check Vertex AI / Gemini."},
+            {
+                "detail": "Failed to translate answer to Japanese. Try again or check Vertex AI / Gemini."
+            },
             status_code=503,
         )
 
@@ -1199,7 +1327,9 @@ def api_query_japanese(payload: JapaneseQueryRequest):
         texts=[TextChunk(**t) for t in texts_norm],
         images=[ImageMatch(**img) for img in images_norm],
         english_query=english_query if payload.include_intermediate_english else None,
-        english_answer=renumbered_english if payload.include_intermediate_english else None,
+        english_answer=(
+            renumbered_english if payload.include_intermediate_english else None
+        ),
         manual_id=manual.manual_id,
         retrieval_expanded=retrieval_expanded,
         retrieval_message=RETRIEVAL_EXPANDED_MESSAGE if retrieval_expanded else None,
@@ -1682,7 +1812,9 @@ def chat_page():
     return FileResponse(path, media_type="text/html")
 
 
-def _condense_conversational_query(rag, question: str, history: List[ChatMessage]) -> str:
+def _condense_conversational_query(
+    rag, question: str, history: List[ChatMessage]
+) -> str:
     """Rewrite follow-up question to a standalone search query containing context."""
     if not history:
         # Detect Japanese characters (Hiragana, Katakana, Kanji)
@@ -1754,7 +1886,9 @@ def _filter_images_by_citations(image_matches: dict, answer: str):
     Keeps all images (does not filter them out), but still rewrites citations
     in the answer text to be sequential based on the cited images.
     """
-    cited_positions = {int(i) - 1 for i in re.findall(r'\[image[:#\s]*(\d+)\]', answer, re.IGNORECASE)}
+    cited_positions = {
+        int(i) - 1 for i in re.findall(r"\[image[:#\s]*(\d+)\]", answer, re.IGNORECASE)
+    }
     if not cited_positions:
         return image_matches, answer
 
@@ -1767,9 +1901,11 @@ def _filter_images_by_citations(image_matches: dict, answer: str):
             new_idx += 1
 
     def _replace(m):
-        return f'[Image {orig_to_new.get(int(m.group(1)), int(m.group(1)))}]'
+        return f"[Image {orig_to_new.get(int(m.group(1)), int(m.group(1)))}]"
 
-    renumbered_answer = re.sub(r'\[image[:#\s]*(\d+)\]', _replace, answer, flags=re.IGNORECASE)
+    renumbered_answer = re.sub(
+        r"\[image[:#\s]*(\d+)\]", _replace, answer, flags=re.IGNORECASE
+    )
     return image_matches, renumbered_answer
 
 
@@ -1785,12 +1921,18 @@ def api_chat(payload: ChatRequest):
     session_id = payload.session_id or str(uuid.uuid4())
 
     # 1. Condense/Rewrite follow-up query using history
-    search_query = _condense_conversational_query(rag, payload.question, payload.history)
+    search_query = _condense_conversational_query(
+        rag, payload.question, payload.history
+    )
 
     # 2. Retrieve only when history doesn't already cover the question
     if _needs_retrieval(rag, search_query, payload.history):
-        text_matches = rag.search_text(search_query, top_n=payload.top_k_text, chunk_text=True)
-        image_matches = rag.search_images_by_description_text(search_query, top_n=payload.top_k_img)
+        text_matches = rag.search_text(
+            search_query, top_n=payload.top_k_text, chunk_text=True
+        )
+        image_matches = rag.search_images_by_description_text(
+            search_query, top_n=payload.top_k_img
+        )
     else:
         text_matches = {}
         image_matches = {}
@@ -1868,12 +2010,16 @@ def api_chat(payload: ChatRequest):
             rag.text_model,
             model_input=system_prompt,
             stream=False,
-            generation_config=GenerationConfig(temperature=payload.temp, max_output_tokens=1024),
+            generation_config=GenerationConfig(
+                temperature=payload.temp, max_output_tokens=1024
+            ),
         )
         return tm, im, (out or "").strip()
 
     # 2-4. First pass, with a widened dealer-fallback pass if context was too thin.
-    text_matches, image_matches, answer = _run_chat_pass(payload.top_k_text, payload.top_k_img)
+    text_matches, image_matches, answer = _run_chat_pass(
+        payload.top_k_text, payload.top_k_img
+    )
     retrieval_expanded = False
     if needs_retrieval and has_insufficient_marker(answer):
         exp_text = min(payload.top_k_text * 2, 40)
@@ -1923,13 +2069,13 @@ def get_available_models(manual_id: Optional[str] = None):
         df = rag.text_metadata_df
         if df is not None and not df.empty:
             doc_col = next(
-                (c for c in ["file_name", "doc_name", "source"] if c in df.columns), None
+                (c for c in ["file_name", "doc_name", "source"] if c in df.columns),
+                None,
             )
             if doc_col:
                 files = list(df[doc_col].dropna().unique())
                 models = [
-                    {"id": f, "name": os.path.splitext(f)[0].upper()}
-                    for f in files
+                    {"id": f, "name": os.path.splitext(f)[0].upper()} for f in files
                 ]
                 return {"manual_id": manual.manual_id, "models": models}
     except Exception as e:
@@ -1941,9 +2087,7 @@ def get_available_models(manual_id: Optional[str] = None):
         if pdf_files:
             return {
                 "manual_id": resolved.manual_id,
-                "models": [
-                    {"id": f.name, "name": f.stem.upper()} for f in pdf_files
-                ],
+                "models": [{"id": f.name, "name": f.stem.upper()} for f in pdf_files],
             }
     except Exception:
         pass
@@ -1955,7 +2099,6 @@ def get_available_models(manual_id: Optional[str] = None):
 
 @app.post("/api/generate-random-question")
 def api_generate_random_question(payload: GenerateQuestionRequest):
-    import json
     import datetime
     import random
 
@@ -1978,7 +2121,9 @@ def api_generate_random_question(payload: GenerateQuestionRequest):
     # Filter by model_name (which corresponds to file_name in dataframe, case insensitive)
     matched_df = df[df["file_name"].str.lower() == payload.model_name.lower()]
     if matched_df.empty:
-        matched_df = df[df["file_name"].str.lower().str.contains(payload.model_name.lower())]
+        matched_df = df[
+            df["file_name"].str.lower().str.contains(payload.model_name.lower())
+        ]
 
     if matched_df.empty:
         matched_df = df
@@ -2006,11 +2151,17 @@ def api_generate_random_question(payload: GenerateQuestionRequest):
 
     # Filter out bad chunks and keep order
     matched_df = matched_df.reset_index(drop=True)
-    clean_indices = [i for i, row in matched_df.iterrows() if is_clean_chunk(row.get("chunk_text") or row.get("text"))]
+    clean_indices = [
+        i
+        for i, row in matched_df.iterrows()
+        if is_clean_chunk(row.get("chunk_text") or row.get("text"))
+    ]
 
     if not clean_indices:
         return JSONResponse(
-            {"error": "No clean/descriptive text chunks found for model question generation."},
+            {
+                "error": "No clean/descriptive text chunks found for model question generation."
+            },
             status_code=404,
         )
 
@@ -2035,7 +2186,9 @@ def api_generate_random_question(payload: GenerateQuestionRequest):
             if candidate_row["file_name"] != matched_df.iloc[start_idx]["file_name"]:
                 break
 
-            candidate_text = candidate_row.get("chunk_text") or candidate_row.get("text") or ""
+            candidate_text = (
+                candidate_row.get("chunk_text") or candidate_row.get("text") or ""
+            )
             if is_clean_chunk(candidate_text):
                 chunks_to_use.append(candidate_row)
             else:
@@ -2075,7 +2228,7 @@ def api_generate_random_question(payload: GenerateQuestionRequest):
                 "1. The question must be a SINGLE, CONCISE, and SIMPLE sentence focusing on exactly ONE specific practical action or troubleshooting symptom mentioned in the text chunk.\n"
                 "2. CRITICAL: Do NOT ask compound questions, do NOT include multiple sub-questions, and do NOT try to cover the entire text chunk. Just select one single, direct topic (e.g., a specific procedure, a single symptom, or a single maintenance task) from the manual text and ask a simple, single-clause query about it.\n"
                 "3. Use these exact styles of simple, single-clause queries as reference (translated into natural, colloquial Myanmar/Burmese script):\n"
-                 "   - Tractor Questions:\n"
+                "   - Tractor Questions:\n"
                 "     - The starter motor won't turn when I try to start the tractor. What should I do?\n"
                 "\n"
                 "     - The starter motor turns, but the engine won't start. How can I fix this?\n"
@@ -2179,7 +2332,7 @@ def api_generate_random_question(payload: GenerateQuestionRequest):
                 "4. Absolutely avoid hyper-specific questions asking for precise figures from a table (e.g., do NOT ask 'What is the maximum allowed pressure for 8-18 6PR front tires?' or 'What is the clearance value in mm?'). "
                 "Instead, ask a practical, high-level troubleshooting or maintenance question that would lead a user or mechanic to refer to this manual section.\n"
                 "5. Output ONLY the single Myanmar (Burmese) question. Do NOT include any English translation, introductory phrase, explanations, conversational filler, or quotation marks.\n\n"
-                f"Manual Chunk(s):\n\"\"\"\n{merged_chunk_text}\n\"\"\"\n\n"
+                f'Manual Chunk(s):\n"""\n{merged_chunk_text}\n"""\n\n'
                 "Farmer/Mechanic Question (in Myanmar/Burmese script):"
             )
         elif payload.language in ("ja", "jp"):
@@ -2192,7 +2345,7 @@ def api_generate_random_question(payload: GenerateQuestionRequest):
                 "1. The question must be a SINGLE, CONCISE, and SIMPLE sentence focusing on exactly ONE specific practical action or troubleshooting symptom mentioned in the text chunk.\n"
                 "2. CRITICAL: Do NOT ask compound questions, do NOT include multiple sub-questions, and do NOT try to cover the entire text chunk. Just select one single, direct topic (e.g., a specific procedure, a single symptom, or a single maintenance task) from the manual text and ask a simple, single-clause query about it.\n"
                 "3. Use these exact styles of simple, single-clause queries as reference (translated into natural, colloquial Japanese):\n"
-                 "   - Tractor Questions:\n"
+                "   - Tractor Questions:\n"
                 "     - The starter motor won't turn when I try to start the tractor. What should I do?\n"
                 "\n"
                 "     - The starter motor turns, but the engine won't start. How can I fix this?\n"
@@ -2296,7 +2449,7 @@ def api_generate_random_question(payload: GenerateQuestionRequest):
                 "4. Absolutely avoid hyper-specific questions asking for precise figures from a table (e.g., do NOT ask 'What is the maximum allowed pressure for 8-18 6PR front tires?' or 'What is the clearance value in mm?'). "
                 "Instead, ask a practical, high-level troubleshooting or maintenance question that would lead a user or mechanic to refer to this manual section.\n"
                 "5. Output ONLY the single Japanese question. Do NOT include any English translation, introductory phrase, explanations, conversational filler, or quotation marks.\n\n"
-                f"Manual Chunk(s):\n\"\"\"\n{merged_chunk_text}\n\"\"\"\n\n"
+                f'Manual Chunk(s):\n"""\n{merged_chunk_text}\n"""\n\n'
                 "Farmer/Mechanic Question (in Japanese script):"
             )
         else:
@@ -2413,7 +2566,7 @@ def api_generate_random_question(payload: GenerateQuestionRequest):
                 "4. CRITICAL: Absolutely avoid hyper-specific questions asking for precise figures from a table (e.g., do NOT ask 'What is the maximum allowed pressure for 8-18 6PR front tires?' or 'What is the clearance value in mm?'). "
                 "Instead, ask a practical, high-level troubleshooting or maintenance question that would lead a user or mechanic to refer to this manual section.\n"
                 "5. Output ONLY the single English question. Do NOT include any introductory phrase, explanations, conversational filler, or quotation marks.\n\n"
-                f"Manual Chunk(s):\n\"\"\"\n{merged_chunk_text}\n\"\"\"\n\n"
+                f'Manual Chunk(s):\n"""\n{merged_chunk_text}\n"""\n\n'
                 "Farmer/Mechanic Question (in English):"
             )
 
@@ -2422,9 +2575,13 @@ def api_generate_random_question(payload: GenerateQuestionRequest):
                 rag.text_model,
                 model_input=instruction,
                 stream=False,
-                generation_config=GenerationConfig(temperature=0.7, max_output_tokens=512),
+                generation_config=GenerationConfig(
+                    temperature=0.7, max_output_tokens=512
+                ),
             )
-            generated_question = (generated_question or "").strip().strip('"').strip("'")
+            generated_question = (
+                (generated_question or "").strip().strip('"').strip("'")
+            )
         except Exception as e:
             return JSONResponse(
                 {"error": f"Failed to generate question with Gemini: {str(e)}"},
@@ -2441,7 +2598,7 @@ def api_generate_random_question(payload: GenerateQuestionRequest):
             "chunk_text": merged_chunk_text,
             "generated_question": generated_question,
             "language": payload.language,
-            "timestamp": datetime.datetime.now().isoformat()
+            "timestamp": datetime.datetime.now().isoformat(),
         }
         results.append(question_item)
 
@@ -2472,3 +2629,198 @@ def api_generate_random_question(payload: GenerateQuestionRequest):
     }
 
 
+# -----------------------------
+# Manual Manager Page
+# -----------------------------
+
+@app.get("/manage")
+def manage_page():
+    """Serve the manual manager UI."""
+    path = TEMPLATES_DIR / "manage.html"
+    if not path.exists():
+        return HTMLResponse("<p>manage.html not found</p>", status_code=404)
+    return HTMLResponse(path.read_text(encoding="utf-8"))
+
+
+@app.post("/api/add-manual")
+async def api_add_manual(
+    manual_id: str = Form(...),
+    display_name: str = Form(""),
+    ocr_lang: str = Form("eng"),
+    description: str = Form(""),
+    files: List[UploadFile] = File(default=[]),
+):
+    """Add a new manual to the registry, create directories, and optionally save uploaded PDFs."""
+    manual_id = manual_id.strip()
+    if not re.fullmatch(r"[a-zA-Z0-9_\-]+", manual_id):
+        return JSONResponse(
+            {"ok": False, "error": "manual_id must be alphanumeric with _ or - only"},
+            status_code=400,
+        )
+    if manual_id in {m.manual_id for m in manual_registry.list()}:
+        return JSONResponse(
+            {"ok": False, "error": f"'{manual_id}' already exists in registry"},
+            status_code=400,
+        )
+
+    resolved_name = display_name.strip() or manual_id.replace("_", " ").title()
+    root = Path(__file__).resolve().parent
+    pdf_folder = f"manuals/{manual_id}/pdf"
+    cache_dir = f"manuals/{manual_id}/cache"
+    image_dir = f"manuals/{manual_id}/cache/images"
+
+    # Create directory structure
+    for sub in (pdf_folder, cache_dir, image_dir):
+        (root / sub).mkdir(parents=True, exist_ok=True)
+
+    # Write to manuals.json registry
+    entry = {
+        "manual_id": manual_id,
+        "display_name": resolved_name,
+        "pdf_folder": pdf_folder,
+        "cache_dir": cache_dir,
+        "image_dir": image_dir,
+        "ocr_lang": ocr_lang.strip() or "eng",
+        "description": description.strip(),
+    }
+    if _MANUALS_JSON_PATH.exists():
+        existing = json.loads(_MANUALS_JSON_PATH.read_text(encoding="utf-8"))
+    else:
+        existing = [
+            {
+                "manual_id": m.manual_id,
+                "display_name": m.display_name,
+                "pdf_folder": m.pdf_folder,
+                "cache_dir": m.cache_dir,
+                "image_dir": m.image_dir,
+                "ocr_lang": m.ocr_lang,
+                "description": m.description,
+            }
+            for m in manual_registry.list()
+        ]
+    existing.append(entry)
+    _MANUALS_JSON_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _MANUALS_JSON_PATH.write_text(
+        json.dumps(existing, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+    )
+
+    # Save uploaded PDFs
+    pdf_count = 0
+    for f in files:
+        if f.filename and f.filename.lower().endswith(".pdf"):
+            dest = root / pdf_folder / f.filename
+            dest.write_bytes(await f.read())
+            if is_s3_configured():
+                upload_manual_pdf_file_to_s3(manual_id, str(dest))
+            pdf_count += 1
+
+    # Hot-reload registry
+    new_cfg = ManualConfig(
+        manual_id=manual_id,
+        display_name=resolved_name,
+        pdf_folder=pdf_folder,
+        cache_dir=cache_dir,
+        image_dir=image_dir,
+        ocr_lang=ocr_lang.strip() or "eng",
+        description=description.strip(),
+    )
+    manual_registry._manuals[manual_id] = new_cfg
+
+    # Mount static route for the new manual's images
+    try:
+        app.mount(
+            f"/static/{manual_id}",
+            StaticFiles(directory=str(root / image_dir)),
+            name=f"static-{manual_id}",
+        )
+    except Exception:
+        pass  # already mounted or not critical
+
+    return JSONResponse(
+        {"ok": True, "manual_id": manual_id, "pdf_count": pdf_count}
+    )
+
+
+@app.post("/api/remove-manual")
+def api_remove_manual(manual_id: str):
+    """Remove a manual: clear pipeline, delete local dirs, remove from manuals.json and S3."""
+    manual_id = manual_id.strip()
+    try:
+        manual = _resolve_manual(manual_id)
+    except RuntimeError as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+
+    if manual_id == DEFAULT_MANUAL_ID:
+        return JSONResponse(
+            {"ok": False, "error": "Cannot remove the default manual"},
+            status_code=400,
+        )
+
+    # Clear in-memory pipeline state
+    _clear_rag_state(manual_id)
+
+    # Delete local directories
+    root = Path(__file__).resolve().parent
+    manual_dir = root / "manuals" / manual_id
+    if manual_dir.exists():
+        shutil.rmtree(manual_dir)
+
+    # Delete from S3
+    s3_deleted = 0
+    if is_s3_configured():
+        try:
+            s3_deleted = delete_manual_from_s3(manual_id)
+        except Exception as e:
+            print(f"[{manual_id}] S3 delete error (continuing): {e}")
+
+    # Remove from in-memory registry
+    manual_registry._manuals.pop(manual_id, None)
+
+    # Remove from manuals.json
+    if _MANUALS_JSON_PATH.exists():
+        try:
+            existing = json.loads(_MANUALS_JSON_PATH.read_text(encoding="utf-8"))
+            existing = [m for m in existing if m.get("manual_id") != manual_id]
+            _MANUALS_JSON_PATH.write_text(
+                json.dumps(existing, indent=2, ensure_ascii=False) + "\n",
+                encoding="utf-8",
+            )
+        except Exception as e:
+            print(f"[{manual_id}] manuals.json update error: {e}")
+
+    return JSONResponse(
+        {"ok": True, "manual_id": manual_id, "s3_deleted": s3_deleted}
+    )
+
+
+@app.post("/api/training/start")
+def api_training_start(manual_id: Optional[str] = None):
+    """Kick off a background training job for one manual. Returns job_id."""
+    try:
+        manual = _resolve_manual(manual_id)
+    except RuntimeError as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+
+    job_id = str(uuid.uuid4())
+    with _training_jobs_lock:
+        _training_jobs[job_id] = {
+            "job_id": job_id,
+            "manual_id": manual.manual_id,
+            "status": "running",
+            "progress": 0,
+            "message": "Starting...",
+        }
+    threading.Thread(
+        target=_run_training_job, args=(job_id, manual), daemon=True
+    ).start()
+    return JSONResponse({"ok": True, "job_id": job_id, "manual_id": manual.manual_id})
+
+
+@app.get("/api/training/status")
+def api_training_status(job_id: str):
+    """Poll training job progress."""
+    with _training_jobs_lock:
+        job = _training_jobs.get(job_id)
+    if job is None:
+        return JSONResponse({"error": "unknown job_id"}, status_code=404)
+    return JSONResponse(dict(job))

@@ -228,3 +228,26 @@ def upload_manual_pdf_file_to_s3(
     key = f"{manual_pdf_s3_prefix(manual_id)}/{name}"
     _get_client().upload_file(str(path), get_bucket_name(), key)
     return True
+
+
+def delete_manual_from_s3(manual_id: str) -> int:
+    """Delete all S3 objects under a manual's prefix. Returns number of objects deleted."""
+    if not is_s3_configured():
+        return 0
+    client = _get_client()
+    bucket = get_bucket_name()
+    prefix = manual_s3_prefix(manual_id) + "/"
+    paginator = client.get_paginator("list_objects_v2")
+    to_delete = []
+    for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+        for obj in page.get("Contents") or []:
+            to_delete.append({"Key": obj["Key"]})
+    if not to_delete:
+        return 0
+    # delete_objects accepts max 1000 per call
+    deleted = 0
+    for i in range(0, len(to_delete), 1000):
+        batch = to_delete[i : i + 1000]
+        client.delete_objects(Bucket=bucket, Delete={"Objects": batch})
+        deleted += len(batch)
+    return deleted
