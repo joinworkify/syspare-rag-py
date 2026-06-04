@@ -41,20 +41,24 @@ try:
         delete_manual_from_s3,
         download_manual_cache_from_s3,
         download_manual_pdfs_from_s3,
+        download_manual_registry_from_s3,
         is_s3_configured,
         upload_image_to_s3,
         upload_manual_cache_to_s3,
         upload_manual_pdf_file_to_s3,
         upload_manual_pdfs_to_s3,
+        upload_manual_registry_to_s3,
     )
 except ImportError:
     is_s3_configured = lambda: False
     download_manual_cache_from_s3 = lambda *a, **k: 0
     download_manual_pdfs_from_s3 = lambda *a, **k: 0
+    download_manual_registry_from_s3 = lambda *a, **k: False
     upload_image_to_s3 = lambda *a, **k: a[1] if len(a) > 1 else ""
     upload_manual_cache_to_s3 = lambda *a, **k: 0
     upload_manual_pdfs_to_s3 = lambda *a, **k: 0
     upload_manual_pdf_file_to_s3 = lambda *a, **k: False
+    upload_manual_registry_to_s3 = lambda *a, **k: False
     delete_manual_from_s3 = lambda *a, **k: 0
 
 
@@ -77,6 +81,13 @@ def _env_int(key: str, default: int) -> int:
 PROJECT_ID = _env("PROJECT_ID", "fortunaii")
 LOCATION = _env("LOCATION", "us-central1")
 
+# config for generation
+MAX_OUTPUT_TOKENS = 8192       # full answers, translations
+MAX_QUERY_TOKENS = 256         # short query rewrites
+MAX_CLASSIFY_TOKENS = 128      # yes/no classification
+MAX_QUESTION_TOKENS = 512      # single question generation
+TEMPERATURE = 0.2
+
 # Allow disabling S3 sync for local/dev (set DISABLE_S3_SYNC=1).
 DISABLE_S3_SYNC = _env("DISABLE_S3_SYNC", "0")
 INIT_RAG_ON_STARTUP = _env("INIT_RAG_ON_STARTUP", "0")
@@ -89,8 +100,9 @@ RETRIEVAL_EXPANDED_MESSAGE = (
 
 # Path to the manuals registry JSON (written by add-manual API)
 _MANUALS_JSON_PATH: Path = (
-    Path(_env("MANUALS_JSON", "")) if _env("MANUALS_JSON", "") else
-    Path(__file__).resolve().parent / "manuals" / "manuals.json"
+    Path(_env("MANUALS_JSON", ""))
+    if _env("MANUALS_JSON", "")
+    else Path(__file__).resolve().parent / "manuals" / "manuals.json"
 )
 
 # Manual registry: list of available manuals + default selection.
@@ -214,15 +226,25 @@ def _sync_from_s3(manual: ManualConfig) -> None:
         return
     if not is_s3_configured():
         return
-    Path(manual.pdf_folder).mkdir(parents=True, exist_ok=True)
-    Path(manual.cache_dir).mkdir(parents=True, exist_ok=True)
-    n_pdfs = download_manual_pdfs_from_s3(manual.manual_id, manual.pdf_folder)
-    n_cache = download_manual_cache_from_s3(manual.manual_id, manual.cache_dir)
+    abs_pdf = _resolve_manual_path(manual.pdf_folder)
+    abs_cache = _resolve_manual_path(manual.cache_dir)
+    Path(abs_pdf).mkdir(parents=True, exist_ok=True)
+    Path(abs_cache).mkdir(parents=True, exist_ok=True)
+    n_pdfs = download_manual_pdfs_from_s3(manual.manual_id, abs_pdf)
+    n_cache = download_manual_cache_from_s3(manual.manual_id, abs_cache)
     if n_pdfs or n_cache:
         print(
             f"[{manual.manual_id}] S3 sync: downloaded {n_pdfs} PDF(s), "
             f"{n_cache} cache file(s)."
         )
+
+
+def _resolve_manual_path(p: str) -> str:
+    """Resolve a manual path to absolute, anchored at rag_server.py's directory."""
+    path = Path(p)
+    if path.is_absolute():
+        return str(path)
+    return str(Path(__file__).resolve().parent / path)
 
 
 def _sync_to_s3(manual: ManualConfig) -> Dict[str, int]:
@@ -231,8 +253,12 @@ def _sync_to_s3(manual: ManualConfig) -> Dict[str, int]:
         return {"cache": 0, "pdfs": 0}
     if not is_s3_configured():
         return {"cache": 0, "pdfs": 0}
-    n_cache = upload_manual_cache_to_s3(manual.manual_id, manual.cache_dir)
-    n_pdfs = upload_manual_pdfs_to_s3(manual.manual_id, manual.pdf_folder)
+    n_cache = upload_manual_cache_to_s3(
+        manual.manual_id, _resolve_manual_path(manual.cache_dir)
+    )
+    n_pdfs = upload_manual_pdfs_to_s3(
+        manual.manual_id, _resolve_manual_path(manual.pdf_folder)
+    )
     if n_cache or n_pdfs:
         print(
             f"[{manual.manual_id}] S3 sync: uploaded {n_cache} cache file(s), "
@@ -385,7 +411,7 @@ def _get_rag(manual_id: Optional[str] = None) -> MultimodalRAGPipeline:
                     pdf_folder_path=manual.pdf_folder,
                     cache_dir=manual.cache_dir,
                     force_rebuild=False,
-                    generation_config=GenerationConfig(temperature=0.2),
+                    generation_config=GenerationConfig(temperature=TEMPERATURE),
                     ocr_fallback=True,
                     image_save_dir=manual.image_dir,
                 )
@@ -474,7 +500,7 @@ def _run_training_job(job_id: str, manual: ManualConfig) -> None:
                 pdf_folder_path=manual.pdf_folder,
                 cache_dir=manual.cache_dir,
                 force_rebuild=True,
-                generation_config=GenerationConfig(temperature=0.2),
+                generation_config=GenerationConfig(temperature=TEMPERATURE),
                 ocr_fallback=True,
                 image_save_dir=manual.image_dir,
                 skip_existing_images=False,
@@ -490,6 +516,7 @@ def _run_training_job(job_id: str, manual: ManualConfig) -> None:
         _set(85, "Syncing cache to S3...")
         counts = _sync_to_s3(manual)
         counts["images_to_s3"] = n_imgs
+        upload_manual_registry_to_s3(str(_MANUALS_JSON_PATH))
 
         # Phase 6: remap paths + cache pipeline
         _set(95, "Finalizing pipeline...")
@@ -500,9 +527,7 @@ def _run_training_job(job_id: str, manual: ManualConfig) -> None:
     except Exception as exc:
         with _training_jobs_lock:
             if job_id in _training_jobs:
-                _training_jobs[job_id].update(
-                    {"status": "error", "message": str(exc)}
-                )
+                _training_jobs[job_id].update({"status": "error", "message": str(exc)})
 
 
 # -----------------------------
@@ -589,7 +614,9 @@ def _rewrite_myanmar_to_english_query(
         rag.text_model,
         model_input=instruction,
         stream=False,
-        generation_config=GenerationConfig(temperature=0.2, max_output_tokens=1024),
+        generation_config=GenerationConfig(
+            temperature=TEMPERATURE, max_output_tokens=MAX_QUERY_TOKENS
+        ),
     )
     return (out or "").strip()
 
@@ -607,7 +634,9 @@ def _english_answer_to_myanmar(rag: MultimodalRAGPipeline, english_answer: str) 
         rag.text_model,
         model_input=instruction,
         stream=False,
-        generation_config=GenerationConfig(temperature=0.2, max_output_tokens=4096),
+        generation_config=GenerationConfig(
+            temperature=TEMPERATURE, max_output_tokens=MAX_OUTPUT_TOKENS
+        ),
     )
     return (out or "").strip()
 
@@ -627,7 +656,9 @@ def _rewrite_japanese_to_english_query(
         rag.text_model,
         model_input=instruction,
         stream=False,
-        generation_config=GenerationConfig(temperature=0.2, max_output_tokens=1024),
+        generation_config=GenerationConfig(
+            temperature=TEMPERATURE, max_output_tokens=MAX_QUERY_TOKENS
+        ),
     )
     return (out or "").strip()
 
@@ -645,7 +676,9 @@ def _english_answer_to_japanese(rag: MultimodalRAGPipeline, english_answer: str)
         rag.text_model,
         model_input=instruction,
         stream=False,
-        generation_config=GenerationConfig(temperature=0.2, max_output_tokens=4096),
+        generation_config=GenerationConfig(
+            temperature=TEMPERATURE, max_output_tokens=MAX_OUTPUT_TOKENS
+        ),
     )
     return (out or "").strip()
 
@@ -1119,7 +1152,7 @@ def api_build_cache(
             pdf_folder_path=manual.pdf_folder,
             cache_dir=manual.cache_dir,
             force_rebuild=True,
-            generation_config=GenerationConfig(temperature=0.2),
+            generation_config=GenerationConfig(temperature=TEMPERATURE),
             ocr_fallback=True,
             image_save_dir=manual.image_dir,
             skip_existing_images=skip_existing_images,
@@ -1157,14 +1190,21 @@ def api_sync_to_s3(manual_id: Optional[str] = None):
             {"ok": False, "error": "S3 not configured. Set AWS_* and S3_BUCKET_NAME."},
             status_code=400,
         )
-    counts = _sync_to_s3(manual)
+    # Bypass DISABLE_S3_SYNC — this is an explicit user-triggered upload.
+    n_cache = upload_manual_cache_to_s3(
+        manual.manual_id, _resolve_manual_path(manual.cache_dir)
+    )
+    n_pdfs = upload_manual_pdfs_to_s3(
+        manual.manual_id, _resolve_manual_path(manual.pdf_folder)
+    )
+    upload_manual_registry_to_s3(str(_MANUALS_JSON_PATH))
     return JSONResponse(
         {
             "ok": True,
             "manual_id": manual.manual_id,
-            "message": f"Uploaded {counts['cache']} cache file(s), "
-            f"{counts['pdfs']} PDF(s) to S3 for {manual.manual_id}.",
-            "uploaded": counts,
+            "message": f"Uploaded {n_cache} cache file(s), "
+            f"{n_pdfs} PDF(s) to S3 for {manual.manual_id}.",
+            "uploaded": {"cache": n_cache, "pdfs": n_pdfs},
         }
     )
 
@@ -1882,7 +1922,9 @@ def _condense_conversational_query(
         rag.text_model,
         model_input=instruction,
         stream=False,
-        generation_config=GenerationConfig(temperature=0.2, max_output_tokens=256),
+        generation_config=GenerationConfig(
+            temperature=TEMPERATURE, max_output_tokens=MAX_QUERY_TOKENS
+        ),
     )
     res = (out or question).strip()
     # Check if the condensed query still contains Japanese or Myanmar characters due to model following errors
@@ -1913,7 +1955,9 @@ def _needs_retrieval(rag, condensed_query: str, history: List[ChatMessage]) -> b
         rag.text_model,
         model_input=prompt,
         stream=False,
-        generation_config=GenerationConfig(temperature=0.0, max_output_tokens=4),
+        generation_config=GenerationConfig(
+            temperature=0.0, max_output_tokens=MAX_CLASSIFY_TOKENS
+        ),
     )
     return "yes" in (out or "yes").strip().lower()
 
@@ -2047,7 +2091,7 @@ def api_chat(payload: ChatRequest):
             model_input=system_prompt,
             stream=False,
             generation_config=GenerationConfig(
-                temperature=payload.temp, max_output_tokens=1024
+                temperature=payload.temp, max_output_tokens=MAX_OUTPUT_TOKENS
             ),
         )
         return tm, im, (out or "").strip()
@@ -2622,7 +2666,7 @@ def api_generate_random_question(payload: GenerateQuestionRequest):
                 model_input=instruction,
                 stream=False,
                 generation_config=GenerationConfig(
-                    temperature=0.7, max_output_tokens=512
+                    temperature=0.7, max_output_tokens=MAX_QUESTION_TOKENS
                 ),
             )
             generated_question = (
@@ -2678,6 +2722,7 @@ def api_generate_random_question(payload: GenerateQuestionRequest):
 # -----------------------------
 # Manual Manager Page
 # -----------------------------
+
 
 @app.get("/manage")
 def manage_page():
@@ -2749,6 +2794,7 @@ async def api_add_manual(
     _MANUALS_JSON_PATH.write_text(
         json.dumps(existing, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
     )
+    upload_manual_registry_to_s3(str(_MANUALS_JSON_PATH))
 
     # Save uploaded PDFs
     pdf_count = 0
@@ -2782,9 +2828,7 @@ async def api_add_manual(
     except Exception:
         pass  # already mounted or not critical
 
-    return JSONResponse(
-        {"ok": True, "manual_id": manual_id, "pdf_count": pdf_count}
-    )
+    return JSONResponse({"ok": True, "manual_id": manual_id, "pdf_count": pdf_count})
 
 
 @app.post("/api/remove-manual")
@@ -2831,12 +2875,11 @@ def api_remove_manual(manual_id: str):
                 json.dumps(existing, indent=2, ensure_ascii=False) + "\n",
                 encoding="utf-8",
             )
+            upload_manual_registry_to_s3(str(_MANUALS_JSON_PATH))
         except Exception as e:
             print(f"[{manual_id}] manuals.json update error: {e}")
 
-    return JSONResponse(
-        {"ok": True, "manual_id": manual_id, "s3_deleted": s3_deleted}
-    )
+    return JSONResponse({"ok": True, "manual_id": manual_id, "s3_deleted": s3_deleted})
 
 
 @app.post("/api/training/start")

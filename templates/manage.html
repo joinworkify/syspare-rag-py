@@ -389,6 +389,11 @@
                     '<svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>' +
                     (isTraining ? 'Training...' : 'Train') +
                   '</button>' +
+                  '<button type="button" data-manual="' + m.manual_id + '"' +
+                    ' class="upload-s3-btn inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold transition-all duration-200 bg-teal-500/10 text-teal-400 border border-teal-500/30 hover:bg-teal-500/20 hover:text-teal-300 cursor-pointer">' +
+                    '<svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"/></svg>' +
+                    'Upload to S3' +
+                  '</button>' +
                   (!m.is_default
                     ? '<button type="button" data-manual="' + m.manual_id + '"' +
                         ' class="remove-btn inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold transition-all duration-200 bg-red-500/10 text-red-400 border border-red-500/25 hover:bg-red-500/20 hover:text-red-300 cursor-pointer">' +
@@ -405,6 +410,12 @@
               btn.addEventListener('click', function () {
                 if (btn.disabled) return;
                 startTraining(btn.dataset.manual);
+              });
+            });
+
+            document.querySelectorAll('.upload-s3-btn').forEach(function (btn) {
+              btn.addEventListener('click', function () {
+                uploadToS3(btn.dataset.manual, btn);
               });
             });
 
@@ -521,6 +532,28 @@
             pollTimer = setInterval(pollTraining, 2000);
           })
           .catch(function (err) { showToast('Training start failed: ' + err.message, 'error'); });
+      }
+
+      // ── Upload cache to S3 ──
+      function uploadToS3(manualId, btn) {
+        var original = btn.innerHTML;
+        btn.disabled = true;
+        btn.innerHTML =
+          '<svg class="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24">' +
+            '<circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>' +
+            '<path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"></path>' +
+          '</svg>Uploading...';
+        fetch('/api/sync-to-s3?manual_id=' + encodeURIComponent(manualId), { method: 'POST' })
+          .then(function (r) { return r.json(); })
+          .then(function (data) {
+            if (!data.ok) throw new Error(data.error || 'Upload failed');
+            showToast(data.message || 'Uploaded to S3!', 'success');
+          })
+          .catch(function (err) { showToast('S3 upload failed: ' + err.message, 'error'); })
+          .finally(function () {
+            btn.disabled = false;
+            btn.innerHTML = original;
+          });
       }
 
       // ── Poll training ──
