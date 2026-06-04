@@ -1084,14 +1084,21 @@ def api_sync_to_s3(manual_id: Optional[str] = None):
             {"ok": False, "error": "S3 not configured. Set AWS_* and S3_BUCKET_NAME."},
             status_code=400,
         )
-    counts = _sync_to_s3(manual)
+    # Bypass DISABLE_S3_SYNC — this is an explicit user-triggered upload.
+    n_cache = upload_manual_cache_to_s3(
+        manual.manual_id, _resolve_manual_path(manual.cache_dir)
+    )
+    n_pdfs = upload_manual_pdfs_to_s3(
+        manual.manual_id, _resolve_manual_path(manual.pdf_folder)
+    )
+    upload_manual_registry_to_s3(str(_MANUALS_JSON_PATH))
     return JSONResponse(
         {
             "ok": True,
             "manual_id": manual.manual_id,
-            "message": f"Uploaded {counts['cache']} cache file(s), "
-            f"{counts['pdfs']} PDF(s) to S3 for {manual.manual_id}.",
-            "uploaded": counts,
+            "message": f"Uploaded {n_cache} cache file(s), "
+            f"{n_pdfs} PDF(s) to S3 for {manual.manual_id}.",
+            "uploaded": {"cache": n_cache, "pdfs": n_pdfs},
         }
     )
 
