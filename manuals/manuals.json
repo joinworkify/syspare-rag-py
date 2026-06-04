@@ -70,14 +70,5 @@
     "image_dir": "manuals/CH_manual/cache/images",
     "ocr_lang": "eng",
     "description": ""
-  },
-  {
-    "manual_id": "YM357_test",
-    "display_name": "YM357 Test",
-    "pdf_folder": "manuals/YM357_test/pdf",
-    "cache_dir": "manuals/YM357_test/cache",
-    "image_dir": "manuals/YM357_test/cache/images",
-    "ocr_lang": "eng",
-    "description": ""
   }
 ]

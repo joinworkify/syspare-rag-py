@@ -431,9 +431,37 @@ def _get_rag(manual_id: Optional[str] = None) -> MultimodalRAGPipeline:
             raise RuntimeError(str(e))
 
 
+def _reload_registry_from_json(path: Path) -> None:
+    """Hot-reload manual_registry from a manuals.json file on disk."""
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        new_manuals = {
+            m["manual_id"]: ManualConfig(
+                manual_id=str(m["manual_id"]),
+                display_name=str(m.get("display_name", m["manual_id"])),
+                pdf_folder=str(m["pdf_folder"]),
+                cache_dir=str(m["cache_dir"]),
+                image_dir=str(m.get("image_dir", str(Path(m["cache_dir"]) / "images"))),
+                ocr_lang=str(m.get("ocr_lang", "eng")),
+                description=str(m.get("description", "")),
+            )
+            for m in payload
+        }
+        manual_registry._manuals = new_manuals
+        print(f"[startup] Registry hot-reloaded: {list(new_manuals)}")
+    except Exception as exc:
+        print(f"[startup] Registry reload failed: {exc}")
+
+
 @app.on_event("startup")
 def _ensure_rag():
     """Warm up pipelines in background so health checks pass immediately."""
+    # Pull latest manuals.json from S3 so add/remove changes survive redeployment.
+    if is_s3_configured() and DISABLE_S3_SYNC != "1":
+        downloaded = download_manual_registry_from_s3(str(_MANUALS_JSON_PATH))
+        if downloaded:
+            _reload_registry_from_json(_MANUALS_JSON_PATH)
+
     if INIT_ALL_RAG_ON_STARTUP == "1":
 
         def _warmup_all():
