@@ -79,5 +79,14 @@
     "image_dir": "manuals/ACE_operation/cache/images",
     "ocr_lang": "eng",
     "description": ""
+  },
+  {
+    "manual_id": "EF725T_operation",
+    "display_name": "EF725T Operation Manual",
+    "pdf_folder": "manuals/EF725T_operation/pdf",
+    "cache_dir": "manuals/EF725T_operation/cache",
+    "image_dir": "manuals/EF725T_operation/cache/images",
+    "ocr_lang": "eng",
+    "description": ""
   }
 ]
