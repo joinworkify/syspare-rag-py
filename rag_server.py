@@ -531,7 +531,7 @@ def _run_training_job(job_id: str, manual: ManualConfig) -> None:
                 generation_config=GenerationConfig(temperature=TEMPERATURE),
                 ocr_fallback=True,
                 image_save_dir=manual.image_dir,
-                skip_existing_images=False,
+                skip_existing_images=True,
             )
         finally:
             _stop_ticker.set()
@@ -1259,6 +1259,20 @@ def api_pull_from_s3(manual_id: Optional[str] = None):
             "message": f"Pulled cache and PDFs from S3 for {manual.manual_id}. RAG state cleared.",
         }
     )
+
+
+@app.post("/api/sync-registry-from-s3")
+def api_sync_registry_from_s3():
+    """Pull manuals.json from S3 and reload the in-memory registry."""
+    if not is_s3_configured():
+        return JSONResponse(
+            {"ok": False, "error": "S3 not configured."},
+            status_code=400,
+        )
+    downloaded = download_manual_registry_from_s3(str(_MANUALS_JSON_PATH))
+    if downloaded:
+        _reload_registry_from_json(_MANUALS_JSON_PATH)
+    return JSONResponse({"ok": True, "updated": downloaded})
 
 
 @app.post("/api/query", response_model=QueryResponse)

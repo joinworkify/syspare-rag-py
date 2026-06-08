@@ -514,18 +514,25 @@ def get_gemini_response(
 
     #  Streaming: response is iterable
     response_list: List[str] = []
-    for chunk in response:
-        try:
-            if getattr(chunk, "text", None):
-                response_list.append(chunk.text)
-        except Exception as e:
-            print(
-                "Exception occurred while iterating gemini stream chunk. "
-                "Try lowering safety thresholds [safety_settings: BLOCK_NONE ] if not already done. -----",
-                e,
-            )
-            response_list.append("Exception occurred")
-            continue
+    try:
+        for chunk in response:
+            try:
+                if getattr(chunk, "text", None):
+                    response_list.append(chunk.text)
+            except Exception as e:
+                print(
+                    "Exception occurred while iterating gemini stream chunk. "
+                    "Try lowering safety thresholds [safety_settings: BLOCK_NONE ] if not already done. -----",
+                    e,
+                )
+                response_list.append("Exception occurred")
+                continue
+    except Exception as e:
+        print(
+            "Exception occurred while iterating gemini stream. "
+            "Try lowering safety thresholds [safety_settings: BLOCK_NONE ] if not already done. -----",
+            e,
+        )
 
     return "".join(response_list).strip()
 
@@ -727,7 +734,7 @@ def get_document_metadata(
                         model_input=[image_description_prompt, image_for_gemini],
                         generation_config=generation_config,
                         safety_settings=safety_settings,
-                        stream=True,
+                        stream=False,
                     )
                     image_embedding = get_image_embedding_from_multimodal_embedding_model(
                         image_uri=image_name,
@@ -753,12 +760,17 @@ def get_document_metadata(
                 _doc.close()
 
         workers = _BUILD_WORKERS if not add_sleep_after_page else 1
-        with ThreadPoolExecutor(max_workers=workers) as executor:
-            futures = [executor.submit(_process_page, pn) for pn in range(num_pages)]
-            for future in as_completed(futures):
-                pn, t_meta, i_meta = future.result()
+        executor = ThreadPoolExecutor(max_workers=workers)
+        futures_map = {executor.submit(_process_page, pn): pn for pn in range(num_pages)}
+        for future in as_completed(futures_map):
+            try:
+                pn, t_meta, i_meta = future.result(timeout=120)
                 text_metadata[pn] = t_meta
                 image_metadata[pn] = i_meta
+            except Exception as e:
+                page_num = futures_map[future]
+                print(f"Warning: page {page_num + 1} failed/timed out, skipping: {e}")
+        executor.shutdown(wait=False)
 
         text_metadata_df = get_text_metadata_df(file_name, text_metadata)
         image_metadata_df = get_image_metadata_df(file_name, image_metadata)

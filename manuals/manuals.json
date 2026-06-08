@@ -70,5 +70,14 @@
     "image_dir": "manuals/CH_manual/cache/images",
     "ocr_lang": "eng",
     "description": ""
+  },
+  {
+    "manual_id": "ACE_operation",
+    "display_name": "ACE Operation Manual",
+    "pdf_folder": "manuals/ACE_operation/pdf",
+    "cache_dir": "manuals/ACE_operation/cache",
+    "image_dir": "manuals/ACE_operation/cache/images",
+    "ocr_lang": "eng",
+    "description": ""
   }
 ]

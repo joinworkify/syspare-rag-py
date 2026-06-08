@@ -328,18 +328,25 @@ class Pipeline:
                 return "Exception occurred"
 
         response_list: List[str] = []
-        for chunk in response:
-            try:
-                if getattr(chunk, "text", None):
-                    response_list.append(chunk.text)
-            except Exception as e:
-                print(
-                    "Exception occurred while calling gemini (stream). "
-                    "Try lowering safety thresholds [safety_settings: BLOCK_NONE ] if not already done. -----",
-                    e,
-                )
-                response_list.append("Exception occurred")
-                continue
+        try:
+            for chunk in response:
+                try:
+                    if getattr(chunk, "text", None):
+                        response_list.append(chunk.text)
+                except Exception as e:
+                    print(
+                        "Exception occurred while calling gemini (stream). "
+                        "Try lowering safety thresholds [safety_settings: BLOCK_NONE ] if not already done. -----",
+                        e,
+                    )
+                    response_list.append("Exception occurred")
+                    continue
+        except Exception as e:
+            print(
+                "Exception occurred while iterating gemini stream. "
+                "Try lowering safety thresholds [safety_settings: BLOCK_NONE ] if not already done. -----",
+                e,
+            )
 
         return "".join(response_list).strip()
 
@@ -527,21 +534,25 @@ class Pipeline:
 
         pbar_lock = threading.Lock()
 
-        with ThreadPoolExecutor(max_workers=max_workers) as ex:
-            futures = [
-                ex.submit(self.process_one_page, pdf_path, p, base_metadata, out_root)
-                for p in range(total_pages)
-            ]
+        ex = ThreadPoolExecutor(max_workers=max_workers)
+        futures = {
+            ex.submit(self.process_one_page, pdf_path, p, base_metadata, out_root): p
+            for p in range(total_pages)
+        }
 
-            for fut in as_completed(futures):
-                page_number, text_payload, image_payload = fut.result()
-
+        for fut in as_completed(futures):
+            try:
+                page_number, text_payload, image_payload = fut.result(timeout=120)
                 text_metadata[page_number] = text_payload
                 image_metadata[page_number] = image_payload
+            except Exception as e:
+                page_num = futures[fut]
+                print(f"Warning: page {page_num + 1} failed/timed out, skipping: {e}")
 
-                with pbar_lock:
-                    pbar.update(1)
+            with pbar_lock:
+                pbar.update(1)
 
+        ex.shutdown(wait=False)
         pbar.close()
 
         # Build your dataframes as before
