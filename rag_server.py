@@ -995,6 +995,7 @@ class ChatRequest(BaseModel):
     temp: float = 0.4
     answer_language: str = "auto"
     manual_id: Optional[str] = None
+    log_response: bool = True
 
 
 class ChatResponse(BaseModel):
@@ -2262,26 +2263,29 @@ def api_chat(payload: ChatRequest):
     new_history.append(ChatMessage(role="user", content=payload.question))
     new_history.append(ChatMessage(role="model", content=answer))
 
-    log_id = str(uuid.uuid4())
-    slug = _new_feedback_slug()
-    chat_log_record = _build_chat_log_record(
-        log_id=log_id,
-        slug=slug,
-        session_id=session_id,
-        question=payload.question,
-        answer=answer,
-        texts=texts_norm,
-        images=images_norm,
-        manual_id=manual.manual_id,
-        answer_language=target_language,
-        retrieval_expanded=retrieval_expanded,
-    )
-    try:
-        saved = upload_chat_log_record(chat_log_record)
-        if not saved:
-            print(f"[chat-feedback] S3 not configured; skipped log record {log_id}")
-    except Exception as exc:
-        print(f"[chat-feedback] Failed to save log record {log_id}: {exc}")
+    log_id = None
+    slug = None
+    if payload.log_response:
+        log_id = str(uuid.uuid4())
+        slug = _new_feedback_slug()
+        chat_log_record = _build_chat_log_record(
+            log_id=log_id,
+            slug=slug,
+            session_id=session_id,
+            question=payload.question,
+            answer=answer,
+            texts=texts_norm,
+            images=images_norm,
+            manual_id=manual.manual_id,
+            answer_language=target_language,
+            retrieval_expanded=retrieval_expanded,
+        )
+        try:
+            saved = upload_chat_log_record(chat_log_record)
+            if not saved:
+                print(f"[chat-feedback] S3 not configured; skipped log record {log_id}")
+        except Exception as exc:
+            print(f"[chat-feedback] Failed to save log record {log_id}: {exc}")
 
     return ChatResponse(
         session_id=session_id,
