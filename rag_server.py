@@ -1,8 +1,12 @@
 # rag_server.py
 from collections import OrderedDict
+import csv
+from datetime import datetime, timezone
+import io
 import json
 import os
 import re
+import secrets
 import shutil
 import threading
 import time
@@ -13,7 +17,7 @@ from typing import Any, Dict, List, Optional
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, Form, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from jinja2 import Environment, FileSystemLoader
 from pydantic import BaseModel
@@ -42,7 +46,10 @@ try:
         download_manual_cache_from_s3,
         download_manual_pdfs_from_s3,
         download_manual_registry_from_s3,
+        list_chat_log_records,
+        upload_chat_log_record,
         is_s3_configured,
+        update_chat_log_feedback,
         upload_image_to_s3,
         upload_manual_cache_to_s3,
         upload_manual_pdf_file_to_s3,
@@ -54,11 +61,14 @@ except ImportError:
     download_manual_cache_from_s3 = lambda *a, **k: 0
     download_manual_pdfs_from_s3 = lambda *a, **k: 0
     download_manual_registry_from_s3 = lambda *a, **k: False
+    list_chat_log_records = lambda *a, **k: []
+    upload_chat_log_record = lambda *a, **k: False
     upload_image_to_s3 = lambda *a, **k: a[1] if len(a) > 1 else ""
     upload_manual_cache_to_s3 = lambda *a, **k: 0
     upload_manual_pdfs_to_s3 = lambda *a, **k: 0
     upload_manual_pdf_file_to_s3 = lambda *a, **k: False
     upload_manual_registry_to_s3 = lambda *a, **k: False
+    update_chat_log_feedback = lambda *a, **k: False
     delete_manual_from_s3 = lambda *a, **k: 0
 
 
@@ -989,12 +999,26 @@ class ChatRequest(BaseModel):
 
 class ChatResponse(BaseModel):
     session_id: str
+    log_id: Optional[str] = None
+    slug: Optional[str] = None
     answer: str
     history: List[ChatMessage]
     texts: List[TextChunk]
     images: List[ImageMatch]
     manual_id: Optional[str] = None
     retrieval_expanded: bool = False
+
+
+class ChatFeedbackRequest(BaseModel):
+    log_id: str
+    recommended_response: str = ""
+    quick_feedback: Optional[str] = None
+    user_name: Optional[str] = None
+
+
+class ChatFeedbackResponse(BaseModel):
+    ok: bool
+    log_id: str
 
 
 class ManualInfo(BaseModel):
@@ -2033,6 +2057,70 @@ def _filter_images_by_citations(image_matches: dict, answer: str):
     return image_matches, renumbered_answer
 
 
+CHAT_FEEDBACK_CSV_FIELDS = [
+    "id",
+    "slug",
+    "question",
+    "answer",
+    "texts",
+    "images",
+    "created_at",
+    "user_name",
+    "Recommended Response",
+]
+
+
+def _new_feedback_slug() -> str:
+    """Generate a short URL-safe slug similar to existing exports."""
+    return secrets.token_urlsafe(9)
+
+
+def _utc_created_at() -> str:
+    """Match the current CSV's readable UTC timestamp style."""
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f+00")
+
+
+def _build_chat_log_record(
+    *,
+    log_id: str,
+    slug: str,
+    session_id: str,
+    question: str,
+    answer: str,
+    texts: List[Dict[str, Any]],
+    images: List[Dict[str, Any]],
+    manual_id: Optional[str],
+    answer_language: str,
+    retrieval_expanded: bool,
+    user_name: str = "Farmer",
+) -> Dict[str, Any]:
+    return {
+        "id": log_id,
+        "slug": slug,
+        "question": question,
+        "answer": answer,
+        "texts": texts,
+        "images": images,
+        "created_at": _utc_created_at(),
+        "user_name": user_name or "Farmer",
+        "Recommended Response": "",
+        "session_id": session_id,
+        "manual_id": manual_id,
+        "answer_language": answer_language,
+        "retrieval_expanded": retrieval_expanded,
+    }
+
+
+def _record_to_feedback_csv_row(record: Dict[str, Any]) -> Dict[str, str]:
+    row: Dict[str, str] = {}
+    for field in CHAT_FEEDBACK_CSV_FIELDS:
+        value = record.get(field, "")
+        if field in {"texts", "images"}:
+            value = json.dumps(value or [], ensure_ascii=False)
+        row[field] = "" if value is None else str(value)
+    return row
+
+
 @app.post("/api/chat", response_model=ChatResponse)
 def api_chat(payload: ChatRequest):
     """Multi-turn conversational RAG backend endpoint."""
@@ -2174,14 +2262,97 @@ def api_chat(payload: ChatRequest):
     new_history.append(ChatMessage(role="user", content=payload.question))
     new_history.append(ChatMessage(role="model", content=answer))
 
+    log_id = str(uuid.uuid4())
+    slug = _new_feedback_slug()
+    chat_log_record = _build_chat_log_record(
+        log_id=log_id,
+        slug=slug,
+        session_id=session_id,
+        question=payload.question,
+        answer=answer,
+        texts=texts_norm,
+        images=images_norm,
+        manual_id=manual.manual_id,
+        answer_language=target_language,
+        retrieval_expanded=retrieval_expanded,
+    )
+    try:
+        saved = upload_chat_log_record(chat_log_record)
+        if not saved:
+            print(f"[chat-feedback] S3 not configured; skipped log record {log_id}")
+    except Exception as exc:
+        print(f"[chat-feedback] Failed to save log record {log_id}: {exc}")
+
     return ChatResponse(
         session_id=session_id,
+        log_id=log_id,
+        slug=slug,
         answer=answer,
         history=new_history,
         texts=[TextChunk(**t) for t in texts_norm],
         images=[ImageMatch(**img) for img in images_norm],
         manual_id=manual.manual_id,
         retrieval_expanded=retrieval_expanded,
+    )
+
+
+@app.post("/api/chat-feedback", response_model=ChatFeedbackResponse)
+def api_chat_feedback(payload: ChatFeedbackRequest):
+    """Update feedback for one logged chat answer."""
+    if not is_s3_configured():
+        return JSONResponse(
+            {"ok": False, "log_id": payload.log_id, "error": "S3 not configured."},
+            status_code=503,
+        )
+
+    recommended_response = (payload.recommended_response or "").strip()
+    quick_feedback = (payload.quick_feedback or "").strip()
+    if not recommended_response:
+        recommended_response = quick_feedback
+
+    updated = update_chat_log_feedback(
+        payload.log_id,
+        {
+            "Recommended Response": recommended_response,
+            "quick_feedback": quick_feedback,
+            "feedback_user_name": (payload.user_name or "").strip() or "Farmer",
+            "feedback_submitted_at": _utc_created_at(),
+        },
+    )
+    if not updated:
+        return JSONResponse(
+            {
+                "ok": False,
+                "log_id": payload.log_id,
+                "error": "Feedback log record not found.",
+            },
+            status_code=404,
+        )
+    return ChatFeedbackResponse(ok=True, log_id=payload.log_id)
+
+
+@app.get("/api/chat-feedback/export.csv")
+def api_chat_feedback_export_csv():
+    """Export S3 chat feedback logs in the legacy CSV shape."""
+    if not is_s3_configured():
+        return JSONResponse({"ok": False, "error": "S3 not configured."}, status_code=503)
+
+    records = list_chat_log_records()
+    records.sort(key=lambda r: str(r.get("created_at") or ""), reverse=True)
+
+    out = io.StringIO()
+    writer = csv.DictWriter(out, fieldnames=CHAT_FEEDBACK_CSV_FIELDS)
+    writer.writeheader()
+    for record in records:
+        writer.writerow(_record_to_feedback_csv_row(record))
+
+    headers = {
+        "Content-Disposition": 'attachment; filename="logs_rag_chat.csv"',
+    }
+    return StreamingResponse(
+        iter([out.getvalue()]),
+        media_type="text/csv; charset=utf-8",
+        headers=headers,
     )
 
 

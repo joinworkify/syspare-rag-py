@@ -2,9 +2,10 @@
 # Uses env: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_DEFAULT_REGION,
 #           S3_BUCKET_NAME, S3_RAG_PREFIX (optional, default "rag-data")
 
+import json
 import os
 from pathlib import Path
-from typing import Optional
+from typing import Any, Dict, List, Optional
 
 # S3 layout:
 #   {S3_RAG_PREFIX}/pdfs/     -> local PDF_FOLDER (uploaded PDFs)
@@ -44,6 +45,76 @@ def get_s3_public_url(key: str) -> str:
     """Return the public HTTPS URL for an S3 object key."""
     region = _env("AWS_DEFAULT_REGION", "us-east-2")
     return f"https://{get_bucket_name()}.s3.{region}.amazonaws.com/{key}"
+
+
+def chat_feedback_s3_prefix() -> str:
+    """S3 prefix for one-object-per-response RAG chat feedback logs."""
+    return f"{get_s3_prefix()}/feedback/rag_chat"
+
+
+def chat_feedback_record_key(log_id: str) -> str:
+    return f"{chat_feedback_s3_prefix()}/{log_id}.json"
+
+
+def upload_chat_log_record(record: Dict[str, Any]) -> bool:
+    """Upload a single chat log/feedback record as JSON. Returns True on success."""
+    if not is_s3_configured():
+        return False
+    log_id = str(record.get("id") or "").strip()
+    if not log_id:
+        return False
+    body = json.dumps(record, ensure_ascii=False, indent=2).encode("utf-8")
+    _get_client().put_object(
+        Bucket=get_bucket_name(),
+        Key=chat_feedback_record_key(log_id),
+        Body=body,
+        ContentType="application/json; charset=utf-8",
+    )
+    return True
+
+
+def download_chat_log_record(log_id: str) -> Optional[Dict[str, Any]]:
+    """Download one chat log/feedback record from S3."""
+    if not is_s3_configured():
+        return None
+    try:
+        obj = _get_client().get_object(
+            Bucket=get_bucket_name(), Key=chat_feedback_record_key(log_id)
+        )
+        return json.loads(obj["Body"].read().decode("utf-8"))
+    except Exception:
+        return None
+
+
+def list_chat_log_records() -> List[Dict[str, Any]]:
+    """List all chat log/feedback records from S3."""
+    if not is_s3_configured():
+        return []
+    client = _get_client()
+    bucket = get_bucket_name()
+    prefix = chat_feedback_s3_prefix() + "/"
+    records: List[Dict[str, Any]] = []
+    paginator = client.get_paginator("list_objects_v2")
+    for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+        for obj in page.get("Contents") or []:
+            key = obj["Key"]
+            if not key.endswith(".json"):
+                continue
+            try:
+                body = client.get_object(Bucket=bucket, Key=key)["Body"].read()
+                records.append(json.loads(body.decode("utf-8")))
+            except Exception as exc:
+                print(f"Skipping unreadable chat feedback record {key}: {exc}")
+    return records
+
+
+def update_chat_log_feedback(log_id: str, feedback_fields: Dict[str, Any]) -> bool:
+    """Patch feedback fields into an existing chat log record."""
+    record = download_chat_log_record(log_id)
+    if not record:
+        return False
+    record.update(feedback_fields)
+    return upload_chat_log_record(record)
 
 
 def sync_s3_to_local(

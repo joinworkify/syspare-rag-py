@@ -259,6 +259,7 @@
     <!-- Script Handling state, render, list persistence -->
     <script>
         let chatHistory = [];
+        let feedbackLogs = [];
         let activeSessionId = null;
         let activeSessionTitle = "";
         let savedSessions = {};
@@ -401,6 +402,9 @@
                 });
 
                 const data = await response.json();
+                if (!response.ok) {
+                    throw new Error(data.detail || data.error || `Chat request failed (${response.status})`);
+                }
 
                 // Clear the loading indicator
                 const loadingBubble = document.getElementById(loadingBubbleId);
@@ -415,7 +419,15 @@
                 if (loadingBubble) loadingBubble.remove();
 
                 // Append assistant's answer
-                appendMessage('assistant', data.answer);
+                const assistantBubbleId = appendMessage('assistant', data.answer);
+                if (data.log_id) {
+                    feedbackLogs.push({
+                        log_id: data.log_id,
+                        slug: data.slug || '',
+                        submitted: false
+                    });
+                    attachFeedbackControls(assistantBubbleId, data.log_id, false);
+                }
 
                 // Save context history
                 chatHistory = data.history;
@@ -424,7 +436,7 @@
                 renderRAGContext(data.texts, data.images);
 
                 // Save session log locally
-                saveSessionToStorage(activeSessionId, activeSessionTitle, chatHistory, data.texts, data.images);
+                saveSessionToStorage(activeSessionId, activeSessionTitle, chatHistory, data.texts, data.images, feedbackLogs);
 
             } catch (err) {
                 clearInterval(loadingTimer);
@@ -595,14 +607,122 @@
             return bubbleId;
         }
 
+        function attachFeedbackControls(bubbleId, logId, submitted = false) {
+            const bubble = document.getElementById(bubbleId);
+            if (!bubble || !logId) return;
+            const messageBody = bubble.querySelector('.glass-panel');
+            if (!messageBody) return;
+
+            const existing = messageBody.querySelector('.feedback-panel');
+            if (existing) existing.remove();
+
+            const panel = document.createElement('div');
+            panel.className = 'feedback-panel mt-4 pt-3 border-t border-slate-800/80';
+            panel.dataset.logId = logId;
+
+            if (submitted) {
+                panel.innerHTML = '<p class="text-[11px] text-emerald-400 font-semibold">Feedback submitted. Thank you.</p>';
+                messageBody.appendChild(panel);
+                return;
+            }
+
+            const quickOptions = [
+                'Perfect',
+                'Wrong / not useful',
+                'Wrong manual/context',
+                'Translation/terminology issue'
+            ];
+            panel.innerHTML = `
+                <div class="space-y-2">
+                    <p class="text-[11px] text-slate-500 font-semibold uppercase tracking-wider">Was this answer useful?</p>
+                    <div class="feedback-options flex flex-wrap gap-1.5">
+                        ${quickOptions.map(option => `
+                            <button type="button" data-feedback="${escapeHtml(option)}"
+                                class="feedback-option px-2.5 py-1 rounded-lg border border-slate-700 text-[11px] text-slate-400 hover:border-emerald-500/50 hover:text-emerald-300 transition">
+                                ${escapeHtml(option)}
+                            </button>
+                        `).join('')}
+                    </div>
+                    <textarea class="feedback-text w-full min-h-16 rounded-xl border border-slate-800 bg-slate-950/60 p-2.5 text-xs text-slate-200 placeholder:text-slate-600 focus:outline-none focus:border-emerald-500/60"
+                        placeholder="Optional correction or recommended response..."></textarea>
+                    <div class="flex items-center gap-2">
+                        <button type="button"
+                            class="feedback-submit px-3 py-1.5 rounded-lg bg-emerald-600/20 border border-emerald-500/30 text-emerald-300 text-xs font-semibold hover:bg-emerald-600/30 transition">
+                            Submit feedback
+                        </button>
+                        <span class="feedback-status text-[11px] text-slate-500"></span>
+                    </div>
+                </div>
+            `;
+
+            let selectedQuick = '';
+            panel.querySelectorAll('.feedback-option').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    selectedQuick = btn.dataset.feedback || '';
+                    panel.querySelectorAll('.feedback-option').forEach(other => {
+                        other.classList.remove('border-emerald-500', 'text-emerald-300', 'bg-emerald-500/10');
+                    });
+                    btn.classList.add('border-emerald-500', 'text-emerald-300', 'bg-emerald-500/10');
+                });
+            });
+
+            panel.querySelector('.feedback-submit').addEventListener('click', async () => {
+                const submit = panel.querySelector('.feedback-submit');
+                const status = panel.querySelector('.feedback-status');
+                const text = panel.querySelector('.feedback-text').value.trim();
+                if (!selectedQuick && !text) {
+                    status.textContent = 'Choose an option or add a correction.';
+                    status.className = 'feedback-status text-[11px] text-amber-400';
+                    return;
+                }
+
+                submit.disabled = true;
+                status.textContent = 'Saving...';
+                status.className = 'feedback-status text-[11px] text-slate-500';
+
+                try {
+                    const response = await fetch('/api/chat-feedback', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+                        body: JSON.stringify({
+                            log_id: logId,
+                            quick_feedback: selectedQuick,
+                            recommended_response: text,
+                            user_name: 'Farmer'
+                        })
+                    });
+                    const data = await response.json();
+                    if (!response.ok || !data.ok) {
+                        throw new Error(data.error || data.detail || 'Feedback save failed');
+                    }
+
+                    feedbackLogs = feedbackLogs.map(item =>
+                        item.log_id === logId ? { ...item, submitted: true } : item
+                    );
+                    if (activeSessionId) {
+                        saveSessionToStorage(activeSessionId, activeSessionTitle, chatHistory, [], [], feedbackLogs);
+                    }
+                    panel.innerHTML = '<p class="text-[11px] text-emerald-400 font-semibold">Feedback submitted. Thank you.</p>';
+                } catch (err) {
+                    submit.disabled = false;
+                    status.textContent = err instanceof Error ? err.message : 'Feedback save failed';
+                    status.className = 'feedback-status text-[11px] text-red-400';
+                }
+            });
+
+            messageBody.appendChild(panel);
+        }
+
         // Saved Sessions manager via LocalStorage
-        function saveSessionToStorage(id, title, history, texts, images) {
+        function saveSessionToStorage(id, title, history, texts, images, feedback = []) {
+            const previous = savedSessions[id] || {};
             savedSessions[id] = {
                 id,
                 title,
                 history,
-                texts,
-                images,
+                texts: texts.length ? texts : (previous.texts || []),
+                images: images.length ? images : (previous.images || []),
+                feedbackLogs: feedback,
                 timestamp: new Date().toISOString()
             };
             localStorage.setItem('yanmar_rag_sessions', JSON.stringify(savedSessions));
@@ -639,14 +759,24 @@
             activeSessionId = session.id;
             activeSessionTitle = session.title;
             chatHistory = session.history;
+            feedbackLogs = session.feedbackLogs || [];
 
             landingWelcome.classList.add('hidden');
             messagesContainer.classList.remove('hidden');
             messagesContainer.innerHTML = '';
 
             // Repopulate messages
+            let assistantIndex = 0;
             chatHistory.forEach(msg => {
-                appendMessage(msg.role === 'user' ? 'user' : 'assistant', msg.content);
+                const role = msg.role === 'user' ? 'user' : 'assistant';
+                const bubbleId = appendMessage(role, msg.content);
+                if (role === 'assistant') {
+                    const log = feedbackLogs[assistantIndex];
+                    if (log && log.log_id) {
+                        attachFeedbackControls(bubbleId, log.log_id, !!log.submitted);
+                    }
+                    assistantIndex += 1;
+                }
             });
 
             // Repopulate right panel
@@ -670,6 +800,7 @@
         // Start a brand new conversational flow
         function startNewChat() {
             chatHistory = [];
+            feedbackLogs = [];
             activeSessionId = null;
             activeSessionTitle = "";
             messagesContainer.innerHTML = '';
