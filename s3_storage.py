@@ -117,6 +117,105 @@ def update_chat_log_feedback(log_id: str, feedback_fields: Dict[str, Any]) -> bo
     return upload_chat_log_record(record)
 
 
+def chat_history_s3_prefix(user_key: str) -> str:
+    """S3 prefix for durable per-user chat history sessions."""
+    safe_user_key = str(user_key or "").strip()
+    return f"{get_s3_prefix()}/chat_history/users/{safe_user_key}/sessions"
+
+
+def chat_history_session_key(user_key: str, session_id: str) -> str:
+    return f"{chat_history_s3_prefix(user_key)}/{session_id}.json"
+
+
+def upload_chat_history_session(user_key: str, session: Dict[str, Any]) -> bool:
+    """Upload one authenticated user's chat session snapshot to S3."""
+    if not is_s3_configured():
+        return False
+    session_id = str(session.get("id") or "").strip()
+    if not user_key or not session_id:
+        return False
+    body = json.dumps(session, ensure_ascii=False, indent=2).encode("utf-8")
+    _get_client().put_object(
+        Bucket=get_bucket_name(),
+        Key=chat_history_session_key(user_key, session_id),
+        Body=body,
+        ContentType="application/json; charset=utf-8",
+    )
+    return True
+
+
+def download_chat_history_session(
+    user_key: str, session_id: str
+) -> Optional[Dict[str, Any]]:
+    """Download one authenticated user's chat session snapshot from S3."""
+    if not is_s3_configured() or not user_key or not session_id:
+        return None
+    try:
+        obj = _get_client().get_object(
+            Bucket=get_bucket_name(),
+            Key=chat_history_session_key(user_key, session_id),
+        )
+        return json.loads(obj["Body"].read().decode("utf-8"))
+    except Exception:
+        return None
+
+
+def list_chat_history_sessions(user_key: str) -> List[Dict[str, Any]]:
+    """List all chat history session snapshots for one authenticated user."""
+    if not is_s3_configured() or not user_key:
+        return []
+    client = _get_client()
+    bucket = get_bucket_name()
+    prefix = chat_history_s3_prefix(user_key) + "/"
+    records: List[Dict[str, Any]] = []
+    paginator = client.get_paginator("list_objects_v2")
+    for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+        for obj in page.get("Contents") or []:
+            key = obj["Key"]
+            if not key.endswith(".json"):
+                continue
+            try:
+                body = client.get_object(Bucket=bucket, Key=key)["Body"].read()
+                records.append(json.loads(body.decode("utf-8")))
+            except Exception as exc:
+                print(f"Skipping unreadable chat history session {key}: {exc}")
+    return records
+
+
+def delete_chat_history_session(user_key: str, session_id: str) -> bool:
+    """Delete one authenticated user's chat history session from S3."""
+    if not is_s3_configured() or not user_key or not session_id:
+        return False
+    try:
+        _get_client().delete_object(
+            Bucket=get_bucket_name(),
+            Key=chat_history_session_key(user_key, session_id),
+        )
+        return True
+    except Exception:
+        return False
+
+
+def delete_all_chat_history_sessions(user_key: str) -> int:
+    """Delete all chat history sessions for one authenticated user."""
+    if not is_s3_configured() or not user_key:
+        return 0
+    client = _get_client()
+    bucket = get_bucket_name()
+    prefix = chat_history_s3_prefix(user_key) + "/"
+    paginator = client.get_paginator("list_objects_v2")
+    to_delete = []
+    for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+        for obj in page.get("Contents") or []:
+            to_delete.append({"Key": obj["Key"]})
+    deleted = 0
+    for i in range(0, len(to_delete), 1000):
+        batch = to_delete[i : i + 1000]
+        client.delete_objects(Bucket=bucket, Delete={"Objects": batch})
+        deleted += len(batch)
+    return deleted
+
+
 def sync_s3_to_local(
     bucket: str, s3_prefix: str, local_dir: str, *, skip_subdir: str = ""
 ) -> int:

@@ -263,6 +263,7 @@
         let activeSessionId = null;
         let activeSessionTitle = "";
         let savedSessions = {};
+        let historyStatus = { authenticated: false, history_available: false };
 
         const translations = {
             en: {
@@ -319,17 +320,9 @@
         const totalMatchesBadge = document.getElementById('total-matches-badge');
         const sessionList = document.getElementById('session-list');
 
-        // On Load: load saved sessions from localStorage
+        // On Load: detect whether durable server-side chat history is available
         window.addEventListener('DOMContentLoaded', () => {
-            const saved = localStorage.getItem('yanmar_rag_sessions');
-            if (saved) {
-                try {
-                    savedSessions = JSON.parse(saved);
-                    renderSessionList();
-                } catch (e) {
-                    savedSessions = {};
-                }
-            }
+            initializeChatHistory();
 
             // Adjust textarea height automatically
             chatInput.addEventListener('input', () => {
@@ -337,6 +330,38 @@
                 chatInput.style.height = (chatInput.scrollHeight) + 'px';
             });
         });
+
+        async function initializeChatHistory() {
+            try {
+                const statusResponse = await fetch('/api/chat-history/status', {
+                    headers: { Accept: 'application/json' }
+                });
+                const status = await statusResponse.json();
+                historyStatus = {
+                    authenticated: !!status.authenticated,
+                    history_available: !!status.history_available
+                };
+
+                if (historyStatus.authenticated && historyStatus.history_available) {
+                    const listResponse = await fetch('/api/chat-history', {
+                        headers: { Accept: 'application/json' }
+                    });
+                    const data = await listResponse.json();
+                    if (!listResponse.ok) {
+                        throw new Error(data.error || 'Failed to load chat history');
+                    }
+                    savedSessions = {};
+                    (data.sessions || []).forEach(session => {
+                        savedSessions[session.id] = session;
+                    });
+                }
+            } catch (err) {
+                console.warn('Chat history unavailable:', err);
+                historyStatus = { authenticated: false, history_available: false };
+                savedSessions = {};
+            }
+            renderSessionList();
+        }
 
         // Trigger prompt when suggestion cards clicked
         function triggerQuickPrompt(promptText) {
@@ -435,8 +460,8 @@
                 // Render dynamic RAG Context cards
                 renderRAGContext(data.texts, data.images);
 
-                // Save session log locally
-                saveSessionToStorage(activeSessionId, activeSessionTitle, chatHistory, data.texts, data.images, feedbackLogs);
+                // Save session snapshot if durable history is available
+                await saveSessionToStorage(activeSessionId, activeSessionTitle, chatHistory, data.texts, data.images, feedbackLogs);
 
             } catch (err) {
                 clearInterval(loadingTimer);
@@ -700,7 +725,7 @@
                         item.log_id === logId ? { ...item, submitted: true } : item
                     );
                     if (activeSessionId) {
-                        saveSessionToStorage(activeSessionId, activeSessionTitle, chatHistory, [], [], feedbackLogs);
+                        await saveSessionToStorage(activeSessionId, activeSessionTitle, chatHistory, [], [], feedbackLogs);
                     }
                     panel.innerHTML = '<p class="text-[11px] text-emerald-400 font-semibold">Feedback submitted. Thank you.</p>';
                 } catch (err) {
@@ -713,26 +738,60 @@
             messageBody.appendChild(panel);
         }
 
-        // Saved Sessions manager via LocalStorage
-        function saveSessionToStorage(id, title, history, texts, images, feedback = []) {
+        // Saved Sessions manager via authenticated server-side S3 history
+        async function saveSessionToStorage(id, title, history, texts, images, feedback = []) {
+            if (!historyStatus.authenticated || !historyStatus.history_available) {
+                return;
+            }
             const previous = savedSessions[id] || {};
-            savedSessions[id] = {
+            const now = new Date().toISOString();
+            const session = {
                 id,
                 title,
                 history,
                 texts: texts.length ? texts : (previous.texts || []),
                 images: images.length ? images : (previous.images || []),
                 feedbackLogs: feedback,
-                timestamp: new Date().toISOString()
+                created_at: previous.created_at || now,
+                updated_at: now,
+                message_count: history.length
             };
-            localStorage.setItem('yanmar_rag_sessions', JSON.stringify(savedSessions));
+
+            savedSessions[id] = session;
+            try {
+                const response = await fetch(`/api/chat-history/${encodeURIComponent(id)}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+                    body: JSON.stringify(session)
+                });
+                const data = await response.json();
+                if (!response.ok || !data.ok) {
+                    throw new Error(data.error || data.detail || 'Failed to save chat history');
+                }
+                savedSessions[id] = data.session;
+            } catch (err) {
+                console.warn('Failed to save chat history:', err);
+            }
             renderSessionList();
         }
 
         // Render session entries in left sidebar
         function renderSessionList() {
             sessionList.innerHTML = '';
-            const entries = Object.values(savedSessions).sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+            if (!historyStatus.authenticated) {
+                sessionList.innerHTML = '<p class="text-xs text-slate-600 px-3 py-2 italic">Sign in to save and reload chat history.</p>';
+                return;
+            }
+            if (!historyStatus.history_available) {
+                sessionList.innerHTML = '<p class="text-xs text-amber-400/80 px-3 py-2 italic">Chat history is unavailable because storage is not configured.</p>';
+                return;
+            }
+
+            const entries = Object.values(savedSessions).sort((a, b) => {
+                const aDate = new Date(a.updated_at || a.timestamp || 0);
+                const bDate = new Date(b.updated_at || b.timestamp || 0);
+                return bDate - aDate;
+            });
 
             if (entries.length === 0) {
                 sessionList.innerHTML = '<p class="text-xs text-slate-600 px-3 py-2 italic">No previous chats. Start a conversation!</p>';
@@ -744,7 +803,7 @@
                 btn.className = `w-full text-left py-2.5 px-3 rounded-xl transition text-xs font-medium flex items-center justify-between group ${activeSessionId === e.id ? 'bg-slate-900 border border-slate-800 text-emerald-400' : 'text-slate-400 hover:bg-slate-900/60 hover:text-slate-200'
                     }`;
                 btn.innerHTML = `
-                    <span class="truncate flex-1" onclick="loadSession('${e.id}')">💬 ${e.title}</span>
+                    <span class="truncate flex-1" onclick="loadSession('${e.id}')">💬 ${escapeHtml(e.title || 'Untitled chat')}</span>
                     <button onclick="deleteSession(event, '${e.id}')" class="opacity-0 group-hover:opacity-100 p-1 hover:text-red-400 transition" title="Delete conversation">🗑️</button>
                 `;
                 sessionList.appendChild(btn);
@@ -752,8 +811,24 @@
         }
 
         // Loads a previously saved session history into UI
-        function loadSession(id) {
-            const session = savedSessions[id];
+        async function loadSession(id) {
+            let session = savedSessions[id];
+            if (historyStatus.authenticated && historyStatus.history_available) {
+                try {
+                    const response = await fetch(`/api/chat-history/${encodeURIComponent(id)}`, {
+                        headers: { Accept: 'application/json' }
+                    });
+                    const data = await response.json();
+                    if (!response.ok) {
+                        throw new Error(data.error || data.detail || 'Failed to load chat session');
+                    }
+                    session = data;
+                    savedSessions[id] = data;
+                } catch (err) {
+                    alert(err instanceof Error ? err.message : 'Failed to load chat session');
+                    return;
+                }
+            }
             if (!session) return;
 
             activeSessionId = session.id;
@@ -785,10 +860,24 @@
         }
 
         // Delete single conversation session
-        function deleteSession(event, id) {
+        async function deleteSession(event, id) {
             event.stopPropagation();
+            if (historyStatus.authenticated && historyStatus.history_available) {
+                try {
+                    const response = await fetch(`/api/chat-history/${encodeURIComponent(id)}`, {
+                        method: 'DELETE',
+                        headers: { Accept: 'application/json' }
+                    });
+                    const data = await response.json();
+                    if (!response.ok || !data.ok) {
+                        throw new Error(data.error || data.detail || 'Failed to delete chat session');
+                    }
+                } catch (err) {
+                    alert(err instanceof Error ? err.message : 'Failed to delete chat session');
+                    return;
+                }
+            }
             delete savedSessions[id];
-            localStorage.setItem('yanmar_rag_sessions', JSON.stringify(savedSessions));
 
             if (activeSessionId === id) {
                 startNewChat();
@@ -814,13 +903,39 @@
             renderSessionList();
         }
 
-        // Clear all cached logs
-        function clearAllLogs() {
+        // Clear all durable history for the authenticated user
+        async function clearAllLogs() {
+            if (!historyStatus.authenticated || !historyStatus.history_available) {
+                startNewChat();
+                return;
+            }
             if (confirm("Are you sure you want to permanently delete all conversations from your history list?")) {
+                try {
+                    const response = await fetch('/api/chat-history', {
+                        method: 'DELETE',
+                        headers: { Accept: 'application/json' }
+                    });
+                    const data = await response.json();
+                    if (!response.ok || !data.ok) {
+                        throw new Error(data.error || data.detail || 'Failed to clear chat history');
+                    }
+                } catch (err) {
+                    alert(err instanceof Error ? err.message : 'Failed to clear chat history');
+                    return;
+                }
                 savedSessions = {};
-                localStorage.removeItem('yanmar_rag_sessions');
                 startNewChat();
             }
+        }
+
+        function escapeHtml(value) {
+            return String(value).replace(/[&<>"']/g, char => ({
+                '&': '&amp;',
+                '<': '&lt;',
+                '>': '&gt;',
+                '"': '&quot;',
+                "'": '&#39;'
+            }[char]));
         }
 
         // Sidebar Collapse Toggle
