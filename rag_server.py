@@ -2,6 +2,7 @@
 from collections import OrderedDict
 import csv
 from datetime import datetime, timezone
+import hashlib
 import io
 import json
 import os
@@ -20,7 +21,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from jinja2 import Environment, FileSystemLoader
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from vertexai.generative_models import GenerationConfig
 
@@ -42,11 +43,16 @@ load_dotenv()
 
 try:
     from s3_storage import (
+        delete_all_chat_history_sessions,
+        delete_chat_history_session,
         delete_manual_from_s3,
+        download_chat_history_session,
         download_manual_cache_from_s3,
         download_manual_pdfs_from_s3,
         download_manual_registry_from_s3,
+        list_chat_history_sessions,
         list_chat_log_records,
+        upload_chat_history_session,
         upload_chat_log_record,
         is_s3_configured,
         update_chat_log_feedback,
@@ -58,10 +64,15 @@ try:
     )
 except ImportError:
     is_s3_configured = lambda: False
+    delete_all_chat_history_sessions = lambda *a, **k: 0
+    delete_chat_history_session = lambda *a, **k: False
+    download_chat_history_session = lambda *a, **k: None
     download_manual_cache_from_s3 = lambda *a, **k: 0
     download_manual_pdfs_from_s3 = lambda *a, **k: 0
     download_manual_registry_from_s3 = lambda *a, **k: False
+    list_chat_history_sessions = lambda *a, **k: []
     list_chat_log_records = lambda *a, **k: []
+    upload_chat_history_session = lambda *a, **k: False
     upload_chat_log_record = lambda *a, **k: False
     upload_image_to_s3 = lambda *a, **k: a[1] if len(a) > 1 else ""
     upload_manual_cache_to_s3 = lambda *a, **k: 0
@@ -1020,6 +1031,41 @@ class ChatFeedbackRequest(BaseModel):
 class ChatFeedbackResponse(BaseModel):
     ok: bool
     log_id: str
+
+
+class ChatHistorySession(BaseModel):
+    id: str
+    title: str = ""
+    history: List[ChatMessage] = Field(default_factory=list)
+    texts: List[Dict[str, Any]] = Field(default_factory=list)
+    images: List[Dict[str, Any]] = Field(default_factory=list)
+    feedbackLogs: List[Dict[str, Any]] = Field(default_factory=list)
+    manual_id: Optional[str] = None
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+    message_count: Optional[int] = None
+    user_display: Optional[str] = None
+
+
+class ChatHistoryStatusResponse(BaseModel):
+    authenticated: bool
+    history_available: bool
+    user_display: Optional[str] = None
+
+
+class ChatHistoryListResponse(BaseModel):
+    authenticated: bool = True
+    sessions: List[ChatHistorySession]
+
+
+class ChatHistorySaveResponse(BaseModel):
+    ok: bool
+    session: ChatHistorySession
+
+
+class ChatHistoryDeleteResponse(BaseModel):
+    ok: bool
+    deleted: int = 0
 
 
 class ManualInfo(BaseModel):
@@ -2120,6 +2166,171 @@ def _record_to_feedback_csv_row(record: Dict[str, Any]) -> Dict[str, str]:
             value = json.dumps(value or [], ensure_ascii=False)
         row[field] = "" if value is None else str(value)
     return row
+
+
+def _get_chat_history_identity(request: Request) -> Optional[str]:
+    """Read authenticated user identity from a trusted upstream auth layer.
+
+    This service does not implement login. In production, an auth proxy/app
+    should inject one of these headers. For local testing, set
+    CHAT_HISTORY_DEV_USER.
+    """
+    configured_header = _env("CHAT_HISTORY_USER_HEADER", "X-User-Id")
+    header_names = [
+        configured_header,
+        "X-User-Id",
+        "X-User-Email",
+        "X-Authenticated-User-Email",
+        "X-Auth-Request-Email",
+        "X-Auth-Request-User",
+        "X-Forwarded-User",
+    ]
+    for name in header_names:
+        value = (request.headers.get(name) or "").strip()
+        if value:
+            return value
+
+    dev_user = _env("CHAT_HISTORY_DEV_USER", "")
+    return dev_user or None
+
+
+def _chat_history_user_key(identity: str) -> str:
+    """Hash identity before using it in S3 object keys."""
+    normalized = identity.strip().lower()
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
+def _chat_history_auth_context(request: Request) -> Optional[Dict[str, str]]:
+    identity = _get_chat_history_identity(request)
+    if not identity:
+        return None
+    return {
+        "identity": identity,
+        "user_key": _chat_history_user_key(identity),
+    }
+
+
+def _should_store_chat_history_user_display() -> bool:
+    return _env("CHAT_HISTORY_STORE_USER_DISPLAY", "").lower() in {"1", "true", "yes"}
+
+
+def _validate_history_session_id(session_id: str) -> bool:
+    return bool(re.fullmatch(r"[A-Za-z0-9_.:-]{1,128}", session_id or ""))
+
+
+def _normalize_history_session(
+    payload: ChatHistorySession,
+    *,
+    existing: Optional[Dict[str, Any]],
+    user_display: Optional[str],
+) -> Dict[str, Any]:
+    session = payload.model_dump()
+    now = _utc_created_at()
+    session["title"] = (session.get("title") or "Untitled chat")[:120]
+    session["created_at"] = session.get("created_at") or (existing or {}).get("created_at") or now
+    session["updated_at"] = now
+    session["message_count"] = len(session.get("history") or [])
+    if user_display:
+        session["user_display"] = user_display
+    else:
+        session.pop("user_display", None)
+    session["texts"] = session.get("texts") or []
+    session["images"] = session.get("images") or []
+    session["feedbackLogs"] = session.get("feedbackLogs") or []
+    return session
+
+
+@app.get("/api/chat-history/status", response_model=ChatHistoryStatusResponse)
+def api_chat_history_status(request: Request):
+    ctx = _chat_history_auth_context(request)
+    authenticated = bool(ctx)
+    return ChatHistoryStatusResponse(
+        authenticated=authenticated,
+        history_available=authenticated and is_s3_configured(),
+        user_display=ctx["identity"] if ctx else None,
+    )
+
+
+@app.get("/api/chat-history", response_model=ChatHistoryListResponse)
+def api_chat_history_list(request: Request):
+    ctx = _chat_history_auth_context(request)
+    if not ctx:
+        return JSONResponse(
+            {"authenticated": False, "sessions": [], "error": "Not authenticated."},
+            status_code=401,
+        )
+    if not is_s3_configured():
+        return JSONResponse(
+            {"authenticated": True, "sessions": [], "error": "S3 not configured."},
+            status_code=503,
+        )
+    sessions = list_chat_history_sessions(ctx["user_key"])
+    sessions.sort(key=lambda s: str(s.get("updated_at") or s.get("timestamp") or ""), reverse=True)
+    return ChatHistoryListResponse(
+        sessions=[ChatHistorySession(**session) for session in sessions]
+    )
+
+
+@app.get("/api/chat-history/{session_id}", response_model=ChatHistorySession)
+def api_chat_history_get(session_id: str, request: Request):
+    ctx = _chat_history_auth_context(request)
+    if not ctx:
+        return JSONResponse({"error": "Not authenticated."}, status_code=401)
+    if not _validate_history_session_id(session_id):
+        return JSONResponse({"error": "Invalid session id."}, status_code=400)
+    if not is_s3_configured():
+        return JSONResponse({"error": "S3 not configured."}, status_code=503)
+    session = download_chat_history_session(ctx["user_key"], session_id)
+    if not session:
+        return JSONResponse({"error": "Chat session not found."}, status_code=404)
+    return ChatHistorySession(**session)
+
+
+@app.put("/api/chat-history/{session_id}", response_model=ChatHistorySaveResponse)
+def api_chat_history_save(
+    session_id: str, payload: ChatHistorySession, request: Request
+):
+    ctx = _chat_history_auth_context(request)
+    if not ctx:
+        return JSONResponse({"ok": False, "error": "Not authenticated."}, status_code=401)
+    if not _validate_history_session_id(session_id) or session_id != payload.id:
+        return JSONResponse({"ok": False, "error": "Invalid session id."}, status_code=400)
+    if not is_s3_configured():
+        return JSONResponse({"ok": False, "error": "S3 not configured."}, status_code=503)
+    existing = download_chat_history_session(ctx["user_key"], session_id)
+    session = _normalize_history_session(
+        payload,
+        existing=existing,
+        user_display=ctx["identity"] if _should_store_chat_history_user_display() else None,
+    )
+    saved = upload_chat_history_session(ctx["user_key"], session)
+    if not saved:
+        return JSONResponse({"ok": False, "error": "Failed to save session."}, status_code=500)
+    return ChatHistorySaveResponse(ok=True, session=ChatHistorySession(**session))
+
+
+@app.delete("/api/chat-history/{session_id}", response_model=ChatHistoryDeleteResponse)
+def api_chat_history_delete(session_id: str, request: Request):
+    ctx = _chat_history_auth_context(request)
+    if not ctx:
+        return JSONResponse({"ok": False, "error": "Not authenticated."}, status_code=401)
+    if not _validate_history_session_id(session_id):
+        return JSONResponse({"ok": False, "error": "Invalid session id."}, status_code=400)
+    if not is_s3_configured():
+        return JSONResponse({"ok": False, "error": "S3 not configured."}, status_code=503)
+    deleted = delete_chat_history_session(ctx["user_key"], session_id)
+    return ChatHistoryDeleteResponse(ok=True, deleted=1 if deleted else 0)
+
+
+@app.delete("/api/chat-history", response_model=ChatHistoryDeleteResponse)
+def api_chat_history_clear(request: Request):
+    ctx = _chat_history_auth_context(request)
+    if not ctx:
+        return JSONResponse({"ok": False, "error": "Not authenticated."}, status_code=401)
+    if not is_s3_configured():
+        return JSONResponse({"ok": False, "error": "S3 not configured."}, status_code=503)
+    deleted = delete_all_chat_history_sessions(ctx["user_key"])
+    return ChatHistoryDeleteResponse(ok=True, deleted=deleted)
 
 
 @app.post("/api/chat", response_model=ChatResponse)
