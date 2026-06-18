@@ -2349,23 +2349,8 @@ def api_chat(payload: ChatRequest):
         rag, payload.question, payload.history
     )
 
-    # 2. Retrieve only when history doesn't already cover the question
-    if _needs_retrieval(rag, search_query, payload.history):
-        text_matches = rag.search_text(
-            search_query, top_n=payload.top_k_text, chunk_text=True
-        )
-        image_matches = rag.search_images_by_description_text(
-            search_query, top_n=payload.top_k_img
-        )
-    else:
-        text_matches = {}
-        image_matches = {}
-
-    # 3. Format conversational prompt context
-    context_str = ""
-    for idx, t in enumerate(text_matches.values()):
-        context_str += f"Manual Clip [{idx+1}]:\n{t.get('chunk_text', '')}\n\n"
-
+    # 2. Retrieve only when history doesn't already cover the question.
+    # _run_chat_pass owns retrieval so the decision and vector searches happen once.
     needs_retrieval = _needs_retrieval(rag, search_query, payload.history)
 
     history_str = ""
