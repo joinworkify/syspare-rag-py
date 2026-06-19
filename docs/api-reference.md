@@ -196,12 +196,11 @@ List all registered manuals.
 
 | Route | Description |
 |---|---|
-| `GET /` | Default query UI (HTML) |
-| `GET /app` | RAG app (English) |
-| `GET /app-myanmar` | Myanmar RAG app |
-| `GET /v1` | Diagnostic dashboard UI |
-| `GET /chat` | Chat interface |
-| `GET /debug-generator` | Question generator debug page |
+| `GET /` | Legacy single-turn query UI (HTML) |
+| `GET /v1` | Internal diagnostic dashboard UI |
+| `GET /chat` | Standalone chat and feedback UI |
+| `GET /debug-generator` | Developer question generator debug page |
+| `GET /manage` | Admin manual manager UI |
 
 ---
 
