@@ -1,5 +1,6 @@
 # rag_server.py
 from collections import OrderedDict
+import math
 import csv
 from datetime import datetime, timezone
 import hashlib
@@ -46,6 +47,7 @@ try:
         delete_all_chat_history_sessions,
         delete_chat_history_session,
         delete_manual_from_s3,
+        download_chat_log_record,
         download_chat_history_session,
         download_manual_cache_from_s3,
         download_manual_pdfs_from_s3,
@@ -66,6 +68,7 @@ except ImportError:
     is_s3_configured = lambda: False
     delete_all_chat_history_sessions = lambda *a, **k: 0
     delete_chat_history_session = lambda *a, **k: False
+    download_chat_log_record = lambda *a, **k: None
     download_chat_history_session = lambda *a, **k: None
     download_manual_cache_from_s3 = lambda *a, **k: 0
     download_manual_pdfs_from_s3 = lambda *a, **k: 0
@@ -147,6 +150,27 @@ RAG_PIPELINE_CACHE_SIZE = max(
         else 1
     ),
 )
+
+# Anonymous launch guardrails. These in-process limits are intentionally simple
+# and configurable; use an edge/Redis limiter if the app runs multiple workers.
+RATE_LIMIT_ENABLED = _env("RATE_LIMIT_ENABLED", "1").lower() not in {
+    "0",
+    "false",
+    "no",
+}
+TRUST_PROXY_HEADERS = _env("TRUST_PROXY_HEADERS", "1").lower() in {
+    "1",
+    "true",
+    "yes",
+}
+CHAT_RATE_LIMIT_PER_MINUTE = _env_int("CHAT_RATE_LIMIT_PER_MINUTE", 10)
+CHAT_RATE_LIMIT_PER_HOUR = _env_int("CHAT_RATE_LIMIT_PER_HOUR", 60)
+FEEDBACK_RATE_LIMIT_PER_HOUR = _env_int("FEEDBACK_RATE_LIMIT_PER_HOUR", 20)
+GENERATE_QUESTION_RATE_LIMIT_PER_HOUR = _env_int(
+    "GENERATE_QUESTION_RATE_LIMIT_PER_HOUR", 5
+)
+_rate_limit_lock = threading.RLock()
+_rate_limit_events: Dict[str, List[float]] = {}
 # -----------------------------
 # FastAPI setup
 # -----------------------------
@@ -2210,6 +2234,84 @@ def _chat_history_auth_context(request: Request) -> Optional[Dict[str, str]]:
     }
 
 
+def _client_ip_for_rate_limit(request: Request) -> str:
+    """Return a stable client IP, trusting proxy headers only when configured."""
+    if TRUST_PROXY_HEADERS:
+        forwarded_for = (request.headers.get("X-Forwarded-For") or "").strip()
+        if forwarded_for:
+            return forwarded_for.split(",", 1)[0].strip() or "unknown"
+        real_ip = (request.headers.get("X-Real-IP") or "").strip()
+        if real_ip:
+            return real_ip
+    if request.client and request.client.host:
+        return request.client.host
+    return "unknown"
+
+
+def _rate_limit_key(request: Request) -> str:
+    """Key by authenticated identity when present, otherwise by client IP."""
+    identity = _get_chat_history_identity(request)
+    if identity:
+        return f"user:{_chat_history_user_key(identity)}"
+    return f"ip:{_client_ip_for_rate_limit(request)}"
+
+
+def _check_rate_limit(
+    request: Request,
+    *,
+    scope: str,
+    policies: List[tuple[str, int, int]],
+) -> Optional[JSONResponse]:
+    """Apply sliding-window limits and return a 429 response when exceeded."""
+    if not RATE_LIMIT_ENABLED:
+        return None
+
+    active_policies = [
+        (name, limit, window_seconds)
+        for name, limit, window_seconds in policies
+        if limit > 0 and window_seconds > 0
+    ]
+    if not active_policies:
+        return None
+
+    now = time.time()
+    client_key = _rate_limit_key(request)
+    retry_after = 0
+    bucket_keys: List[str] = []
+
+    with _rate_limit_lock:
+        for name, limit, window_seconds in active_policies:
+            bucket_key = f"{scope}:{name}:{client_key}"
+            events = _rate_limit_events.get(bucket_key, [])
+            cutoff = now - window_seconds
+            events = [timestamp for timestamp in events if timestamp > cutoff]
+            _rate_limit_events[bucket_key] = events
+
+            if len(events) >= limit:
+                oldest = events[0]
+                retry_after = max(
+                    retry_after,
+                    max(1, int(math.ceil(window_seconds - (now - oldest)))),
+                )
+            bucket_keys.append(bucket_key)
+
+        if retry_after:
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "error": "Rate limit exceeded. Please wait before trying again.",
+                    "retry_after_seconds": retry_after,
+                },
+                status_code=429,
+                headers={"Retry-After": str(retry_after)},
+            )
+
+        for bucket_key in bucket_keys:
+            _rate_limit_events.setdefault(bucket_key, []).append(now)
+
+    return None
+
+
 def _should_store_chat_history_user_display() -> bool:
     return _env("CHAT_HISTORY_STORE_USER_DISPLAY", "").lower() in {"1", "true", "yes"}
 
@@ -2334,8 +2436,19 @@ def api_chat_history_clear(request: Request):
 
 
 @app.post("/api/chat", response_model=ChatResponse)
-def api_chat(payload: ChatRequest):
+def api_chat(payload: ChatRequest, request: Request):
     """Multi-turn conversational RAG backend endpoint."""
+    limited = _check_rate_limit(
+        request,
+        scope="chat",
+        policies=[
+            ("minute", CHAT_RATE_LIMIT_PER_MINUTE, 60),
+            ("hour", CHAT_RATE_LIMIT_PER_HOUR, 60 * 60),
+        ],
+    )
+    if limited:
+        return limited
+
     try:
         manual = _resolve_manual(payload.manual_id)
         rag = _get_rag(manual.manual_id)
@@ -2497,12 +2610,40 @@ def api_chat(payload: ChatRequest):
 
 
 @app.post("/api/chat-feedback", response_model=ChatFeedbackResponse)
-def api_chat_feedback(payload: ChatFeedbackRequest):
+def api_chat_feedback(payload: ChatFeedbackRequest, request: Request):
     """Update feedback for one logged chat answer."""
+    limited = _check_rate_limit(
+        request,
+        scope="chat_feedback",
+        policies=[("hour", FEEDBACK_RATE_LIMIT_PER_HOUR, 60 * 60)],
+    )
+    if limited:
+        return limited
+
     if not is_s3_configured():
         return JSONResponse(
             {"ok": False, "log_id": payload.log_id, "error": "S3 not configured."},
             status_code=503,
+        )
+
+    existing_record = download_chat_log_record(payload.log_id)
+    if not existing_record:
+        return JSONResponse(
+            {
+                "ok": False,
+                "log_id": payload.log_id,
+                "error": "Feedback log record not found.",
+            },
+            status_code=404,
+        )
+    if existing_record.get("feedback_submitted_at"):
+        return JSONResponse(
+            {
+                "ok": False,
+                "log_id": payload.log_id,
+                "error": "Feedback was already submitted for this response.",
+            },
+            status_code=409,
         )
 
     recommended_response = (payload.recommended_response or "").strip()
@@ -2601,9 +2742,19 @@ def get_available_models(manual_id: Optional[str] = None):
 
 
 @app.post("/api/generate-random-question")
-def api_generate_random_question(payload: GenerateQuestionRequest):
+def api_generate_random_question(payload: GenerateQuestionRequest, request: Request):
     import datetime
     import random
+
+    limited = _check_rate_limit(
+        request,
+        scope="generate_random_question",
+        policies=[
+            ("hour", GENERATE_QUESTION_RATE_LIMIT_PER_HOUR, 60 * 60),
+        ],
+    )
+    if limited:
+        return limited
 
     try:
         manual = _resolve_manual(payload.manual_id)

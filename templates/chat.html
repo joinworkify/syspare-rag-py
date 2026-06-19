@@ -428,6 +428,9 @@
 
                 const data = await response.json();
                 if (!response.ok) {
+                    if (response.status === 429 && data.retry_after_seconds) {
+                        throw new Error(`Too many requests. Please wait ${data.retry_after_seconds} seconds before trying again.`);
+                    }
                     throw new Error(data.detail || data.error || `Chat request failed (${response.status})`);
                 }
 
@@ -467,7 +470,7 @@
                 clearInterval(loadingTimer);
                 const loadingBubble = document.getElementById(loadingBubbleId);
                 if (loadingBubble) loadingBubble.remove();
-                appendMessage('assistant', 'Sorry, I failed to retrieve data from the diagnostic hub. Please check your cloud server or Vertex AI credentials.');
+                appendMessage('assistant', err instanceof Error ? err.message : 'Sorry, I failed to retrieve data from the diagnostic hub. Please try again in a moment.');
             } finally {
                 submitBtn.disabled = false;
             }
@@ -779,7 +782,7 @@
         function renderSessionList() {
             sessionList.innerHTML = '';
             if (!historyStatus.authenticated) {
-                sessionList.innerHTML = '<p class="text-xs text-slate-600 px-3 py-2 italic">Sign in to save and reload chat history.</p>';
+                sessionList.innerHTML = '<p class="text-xs text-slate-600 px-3 py-2 italic">You can chat and submit feedback without signing in. Chat history is saved to your account only when you sign in.</p>';
                 return;
             }
             if (!historyStatus.history_available) {
