@@ -1128,45 +1128,9 @@ def health():
     return {"status": "ok"}
 
 
-@app.get("/app", response_class=HTMLResponse)
-def app_page():
-    """API-driven RAG viewer (same UI as index.html, uses POST /api/query)."""
-    path = TEMPLATES_DIR / "app.html"
-    if not path.exists():
-        return HTMLResponse("<p>app.html not found</p>", status_code=404)
-    return FileResponse(path, media_type="text/html")
-
-
-@app.get("/app/rag-app.js")
-def app_js():
-    """Serve the API-driven RAG app script."""
-    path = TEMPLATES_DIR / "rag-app.js"
-    if not path.exists():
-        return JSONResponse({"error": "rag-app.js not found"}, status_code=404)
-    return FileResponse(path, media_type="application/javascript")
-
-
-@app.get("/app-myanmar", response_class=HTMLResponse)
-def app_myanmar_page():
-    """Myanmar-input RAG viewer (uses POST /api/query-myanmar)."""
-    path = TEMPLATES_DIR / "app-myanmar.html"
-    if not path.exists():
-        return HTMLResponse("<p>app-myanmar.html not found</p>", status_code=404)
-    return FileResponse(path, media_type="text/html")
-
-
-@app.get("/app/rag-myanmar-app.js")
-def app_myanmar_js():
-    """Serve the Myanmar-input RAG app script."""
-    path = TEMPLATES_DIR / "rag-myanmar-app.js"
-    if not path.exists():
-        return JSONResponse({"error": "rag-myanmar-app.js not found"}, status_code=404)
-    return FileResponse(path, media_type="application/javascript")
-
-
 @app.get("/v1", response_class=HTMLResponse)
 def v1_page():
-    """Structured diagnostic UI that calls /api/v1/diagnose."""
+    """Internal structured diagnostic UI that calls /api/v1/diagnose."""
     path = TEMPLATES_DIR / "v1.html"
     if not path.exists():
         return HTMLResponse("<p>v1.html not found</p>", status_code=404)
@@ -1912,6 +1876,7 @@ async def api_v1_diagnose_upload(
 
 @app.get("/", response_class=HTMLResponse)
 def home(manual_id: Optional[str] = None):
+    """Legacy server-rendered single-turn RAG smoke-test page."""
     manual = _resolve_manual(manual_id)
     html = _render_page(
         ran=False,
@@ -2021,6 +1986,7 @@ def query(
 
 @app.get("/chat", response_class=HTMLResponse)
 def chat_page():
+    """Standalone chat/feedback UI; product Next frontend does not call this page."""
     path = TEMPLATES_DIR / "chat.html"
     if not path.exists():
         return HTMLResponse("<p>chat.html not found</p>", status_code=404)
@@ -2699,6 +2665,7 @@ def api_chat_feedback_export_csv():
 
 @app.get("/debug-generator", response_class=HTMLResponse)
 def debug_generator_page():
+    """Developer-only prompt generator and live RAG debugger."""
     path = TEMPLATES_DIR / "generator.html"
     if not path.exists():
         return HTMLResponse("<p>generator.html not found</p>", status_code=404)
@@ -3290,7 +3257,7 @@ def api_generate_random_question(payload: GenerateQuestionRequest, request: Requ
 
 @app.get("/manage")
 def manage_page():
-    """Serve the manual manager UI."""
+    """Admin utility for managing manual registry and training local indexes."""
     path = TEMPLATES_DIR / "manage.html"
     if not path.exists():
         return HTMLResponse("<p>manage.html not found</p>", status_code=404)
