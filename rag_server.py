@@ -1968,6 +1968,7 @@ def home(manual_id: Optional[str] = None, organization_id: Optional[str] = None)
         texts=[],
         images=[],
         selected_manual_id=manual.manual_id,
+        selected_organization_id=organization_id,
     )
     return HTMLResponse(html)
 
@@ -1987,6 +1988,28 @@ def query(
     try:
         manual = _resolve_manual(manual_id, organization_id)
         rag = _get_rag(manual.manual_id)
+    except ManualNotFoundError as e:
+        # Caught separately from the generic RuntimeError below (see _resolve_manual's own
+        # docstring) -- an org-private manual selected without the matching organization_id is
+        # not a GCP/env-var problem, and telling someone to check PROJECT_ID for it just sends
+        # them chasing the wrong thing.
+        html = _render_page(
+            ran=True,
+            q=q,
+            top_k_text=top_k_text,
+            top_k_img=top_k_img,
+            temp=temp,
+            answer_language=answer_language,
+            answer=(
+                f"{e}\n\nThis manual is org-private. Enter its owning organization's id in the "
+                "Organization ID field above and try again."
+            ),
+            texts=[],
+            images=[],
+            selected_manual_id=manual_id or DEFAULT_MANUAL_ID,
+            selected_organization_id=organization_id,
+        )
+        return HTMLResponse(html)
     except RuntimeError as e:
         html = _render_page(
             ran=True,
@@ -1999,6 +2022,7 @@ def query(
             texts=[],
             images=[],
             selected_manual_id=manual_id or DEFAULT_MANUAL_ID,
+            selected_organization_id=organization_id,
         )
         return HTMLResponse(html)
 
@@ -2060,6 +2084,7 @@ def query(
         texts=_normalize_text_matches(text_matches),
         images=_normalize_image_matches(image_matches, manual.manual_id),
         selected_manual_id=manual.manual_id,
+        selected_organization_id=organization_id,
     )
     return HTMLResponse(html)
 
