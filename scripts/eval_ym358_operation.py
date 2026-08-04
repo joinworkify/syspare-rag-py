@@ -32,7 +32,7 @@ if str(_REPO_ROOT) not in sys.path:
 load_dotenv(_REPO_ROOT / ".env")
 
 from pipeline import MultimodalRAGPipeline  # noqa: E402
-from syspare_rag.config import load_manual_registry_from_env, load_rag_config_from_env  # noqa: E402
+from syspare_rag.config import load_manual_registry_from_db, load_rag_config_from_env  # noqa: E402
 from syspare_rag.evaluation import (  # noqa: E402
     DEFAULT_TROUBLESHOOTING_FIXTURE,
     audit_extraction,
@@ -90,7 +90,7 @@ def _load_fixture(path: str | Path) -> Dict[str, Any]:
 
 
 def _manual_paths(manual_id: str = "YM358_operation") -> Dict[str, str]:
-    registry = load_manual_registry_from_env()
+    registry = load_manual_registry_from_db()
     manual = registry.get(manual_id)
     return {
         "manual_id": manual.manual_id,

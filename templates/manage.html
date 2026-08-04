@@ -213,14 +213,25 @@
             </svg>
             Available Manuals
           </h2>
-          <button type="button" id="btn-refresh-list"
-            class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-slate-400 hover:text-slate-200 bg-slate-800/60 hover:bg-slate-800 border border-slate-700 transition-all duration-200">
-            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-            </svg>
-            Refresh
-          </button>
+          <div class="flex items-center gap-2">
+            <button type="button" id="btn-sync-registry"
+              title="Re-query the manual registry from the database (picks up manuals added by another process without restarting)"
+              class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-indigo-400 hover:text-indigo-300 bg-indigo-500/10 hover:bg-indigo-500/20 border border-indigo-500/30 transition-all duration-200">
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                  d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4" />
+              </svg>
+              Refresh registry
+            </button>
+            <button type="button" id="btn-refresh-list"
+              class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-slate-400 hover:text-slate-200 bg-slate-800/60 hover:bg-slate-800 border border-slate-700 transition-all duration-200">
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                  d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+              </svg>
+              Refresh
+            </button>
+          </div>
         </div>
 
         <div id="manuals-list" class="divide-y divide-slate-800/60">
@@ -390,6 +401,11 @@
                     (isTraining ? 'Training...' : 'Train') +
                   '</button>' +
                   '<button type="button" data-manual="' + m.manual_id + '"' +
+                    ' class="pull-s3-btn inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold transition-all duration-200 bg-amber-500/10 text-amber-400 border border-amber-500/30 hover:bg-amber-500/20 hover:text-amber-300 cursor-pointer">' +
+                    '<svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>' +
+                    'Pull from S3' +
+                  '</button>' +
+                  '<button type="button" data-manual="' + m.manual_id + '"' +
                     ' class="upload-s3-btn inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold transition-all duration-200 bg-teal-500/10 text-teal-400 border border-teal-500/30 hover:bg-teal-500/20 hover:text-teal-300 cursor-pointer">' +
                     '<svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"/></svg>' +
                     'Upload to S3' +
@@ -416,6 +432,12 @@
             document.querySelectorAll('.upload-s3-btn').forEach(function (btn) {
               btn.addEventListener('click', function () {
                 uploadToS3(btn.dataset.manual, btn);
+              });
+            });
+
+            document.querySelectorAll('.pull-s3-btn').forEach(function (btn) {
+              btn.addEventListener('click', function () {
+                pullFromS3(btn.dataset.manual, btn);
               });
             });
 
@@ -555,6 +577,53 @@
             btn.innerHTML = original;
           });
       }
+
+      // ── Pull cache from S3 ──
+      function pullFromS3(manualId, btn) {
+        var original = btn.innerHTML;
+        btn.disabled = true;
+        btn.innerHTML =
+          '<svg class="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24">' +
+            '<circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>' +
+            '<path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"></path>' +
+          '</svg>Pulling...';
+        fetch('/api/pull-from-s3?manual_id=' + encodeURIComponent(manualId), { method: 'POST' })
+          .then(function (r) { return r.json(); })
+          .then(function (data) {
+            if (!data.ok) throw new Error(data.error || 'Pull failed');
+            showToast(data.message || 'Pulled from S3!', 'success');
+            fetchManuals();
+          })
+          .catch(function (err) { showToast('S3 pull failed: ' + err.message, 'error'); })
+          .finally(function () {
+            btn.disabled = false;
+            btn.innerHTML = original;
+          });
+      }
+
+      // ── Refresh registry (re-query DB, no restart needed) ──
+      var btnSyncRegistry = document.getElementById('btn-sync-registry');
+      btnSyncRegistry.addEventListener('click', function () {
+        var original = btnSyncRegistry.innerHTML;
+        btnSyncRegistry.disabled = true;
+        btnSyncRegistry.innerHTML =
+          '<svg class="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24">' +
+            '<circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>' +
+            '<path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"></path>' +
+          '</svg>Refreshing...';
+        fetch('/api/sync-registry', { method: 'POST' })
+          .then(function (r) { return r.json(); })
+          .then(function (data) {
+            if (!data.ok) throw new Error(data.error || 'Refresh failed');
+            showToast('Registry refreshed: ' + data.manuals.length + ' manual(s).', 'success');
+            fetchManuals();
+          })
+          .catch(function (err) { showToast('Registry refresh failed: ' + err.message, 'error'); })
+          .finally(function () {
+            btnSyncRegistry.disabled = false;
+            btnSyncRegistry.innerHTML = original;
+          });
+      });
 
       // ── Poll training ──
       function pollTraining() {

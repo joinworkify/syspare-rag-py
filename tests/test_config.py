@@ -1,10 +1,12 @@
 import pytest
 
+from syspare_rag import db
 from syspare_rag.config import (
     ManualConfig,
     ManualNotFoundError,
     ManualRegistry,
     RagConfig,
+    load_manual_registry_from_db,
     load_rag_config_from_env,
 )
 
@@ -97,3 +99,62 @@ def test_load_rag_config_from_env(monkeypatch):
     assert cfg.location == "europe-west4"
     assert cfg.ocr_lang == "eng"
     assert cfg.paths.cache_dir == "./custom-cache"
+
+
+def _db_row(manual_id: str, organization_id: str | None = None, is_default: bool = False) -> dict:
+    return {
+        "manual_id": manual_id,
+        "display_name": manual_id,
+        "pdf_folder": f"manuals/{manual_id}/pdf",
+        "cache_dir": f"manuals/{manual_id}/cache",
+        "image_dir": f"manuals/{manual_id}/cache/images",
+        "ocr_lang": "eng",
+        "description": "",
+        "organization_id": organization_id,
+        "is_default": is_default,
+    }
+
+
+def test_load_manual_registry_from_db_builds_registry(monkeypatch):
+    rows = [
+        _db_row("global_manual", is_default=True),
+        _db_row("org_a_manual", organization_id="org-a"),
+    ]
+    monkeypatch.setattr(db, "list_manuals", lambda: rows)
+    monkeypatch.delenv("DEFAULT_MANUAL_ID", raising=False)
+
+    registry = load_manual_registry_from_db()
+    ids = {m.manual_id for m in registry.list()}
+    assert ids == {"global_manual", "org_a_manual"}
+    assert registry.get("org_a_manual").organization_id == "org-a"
+    assert registry.get("global_manual").organization_id is None
+
+
+def test_load_manual_registry_from_db_default_from_is_default_row(monkeypatch):
+    rows = [
+        _db_row("first_manual"),
+        _db_row("second_manual", is_default=True),
+    ]
+    monkeypatch.setattr(db, "list_manuals", lambda: rows)
+    monkeypatch.delenv("DEFAULT_MANUAL_ID", raising=False)
+
+    registry = load_manual_registry_from_db()
+    assert registry.default_id == "second_manual"
+
+
+def test_load_manual_registry_from_db_default_env_overrides_is_default_row(monkeypatch):
+    rows = [
+        _db_row("first_manual", is_default=True),
+        _db_row("second_manual"),
+    ]
+    monkeypatch.setattr(db, "list_manuals", lambda: rows)
+    monkeypatch.setenv("DEFAULT_MANUAL_ID", "second_manual")
+
+    registry = load_manual_registry_from_db()
+    assert registry.default_id == "second_manual"
+
+
+def test_load_manual_registry_from_db_empty_table_raises(monkeypatch):
+    monkeypatch.setattr(db, "list_manuals", lambda: [])
+    with pytest.raises(RuntimeError):
+        load_manual_registry_from_db()

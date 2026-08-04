@@ -338,9 +338,9 @@
         var btn = this;
         btn.disabled = true;
         btn.classList.add('opacity-50');
-        setStatus('Syncing manuals registry from S3…');
+        setStatus('Refreshing manuals registry…');
         try {
-          await fetch('/api/sync-registry-from-s3', { method: 'POST', headers: { 'Accept': 'application/json' } });
+          await fetch('/api/sync-registry', { method: 'POST', headers: { 'Accept': 'application/json' } });
           setStatus('Fetching manual list…');
           var r = await fetch('/api/manuals', { headers: { 'Accept': 'application/json' } });
           var data = await r.json();

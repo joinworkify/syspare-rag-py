@@ -33,11 +33,12 @@ from pipeline import (
     has_insufficient_marker,
     strip_insufficient_marker,
 )
+from syspare_rag import db as manual_db
 from syspare_rag.config import (
     ManualConfig,
     ManualNotFoundError,
     ManualRegistry,
-    load_manual_registry_from_env,
+    load_manual_registry_from_db,
 )
 from utils import get_gemini_response, _print_progress
 
@@ -52,7 +53,6 @@ try:
         download_chat_history_session,
         download_manual_cache_from_s3,
         download_manual_pdfs_from_s3,
-        download_manual_registry_from_s3,
         list_chat_history_sessions,
         list_chat_log_records,
         upload_chat_history_session,
@@ -63,7 +63,6 @@ try:
         upload_manual_cache_to_s3,
         upload_manual_pdf_file_to_s3,
         upload_manual_pdfs_to_s3,
-        upload_manual_registry_to_s3,
     )
 except ImportError:
     is_s3_configured = lambda: False
@@ -73,7 +72,6 @@ except ImportError:
     download_chat_history_session = lambda *a, **k: None
     download_manual_cache_from_s3 = lambda *a, **k: 0
     download_manual_pdfs_from_s3 = lambda *a, **k: 0
-    download_manual_registry_from_s3 = lambda *a, **k: False
     list_chat_history_sessions = lambda *a, **k: []
     list_chat_log_records = lambda *a, **k: []
     upload_chat_history_session = lambda *a, **k: False
@@ -82,7 +80,6 @@ except ImportError:
     upload_manual_cache_to_s3 = lambda *a, **k: 0
     upload_manual_pdfs_to_s3 = lambda *a, **k: 0
     upload_manual_pdf_file_to_s3 = lambda *a, **k: False
-    upload_manual_registry_to_s3 = lambda *a, **k: False
     update_chat_log_feedback = lambda *a, **k: False
     delete_manual_from_s3 = lambda *a, **k: 0
 
@@ -123,15 +120,9 @@ RETRIEVAL_EXPANDED_MESSAGE = (
     "First pass had insufficient detail, so retrieval was expanded before answering."
 )
 
-# Path to the manuals registry JSON (written by add-manual API)
-_MANUALS_JSON_PATH: Path = (
-    Path(_env("MANUALS_JSON", ""))
-    if _env("MANUALS_JSON", "")
-    else Path(__file__).resolve().parent / "manuals" / "manuals.json"
-)
-
-# Manual registry: list of available manuals + default selection.
-manual_registry: ManualRegistry = load_manual_registry_from_env()
+# Manual registry: list of available manuals + default selection, loaded from the
+# syspare_rag_manuals Postgres table (shared Supabase project with workify).
+manual_registry: ManualRegistry = load_manual_registry_from_db()
 DEFAULT_MANUAL = manual_registry.default
 DEFAULT_MANUAL_ID = manual_registry.default_id
 
@@ -493,39 +484,34 @@ def _get_rag(manual_id: Optional[str] = None) -> MultimodalRAGPipeline:
             raise RuntimeError(str(e))
 
 
-def _reload_registry_from_json(path: Path) -> None:
-    """Hot-reload manual_registry from a manuals.json file on disk."""
+def _reload_registry_from_db() -> None:
+    """Hot-reload manual_registry from syspare_rag_manuals -- called by /api/sync-registry and
+    the periodic background refresh below, so a manual inserted through another path (or a
+    second syspare-rag-py instance) becomes visible here without a restart."""
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-        new_manuals = {
-            m["manual_id"]: ManualConfig(
-                manual_id=str(m["manual_id"]),
-                display_name=str(m.get("display_name", m["manual_id"])),
-                pdf_folder=str(m["pdf_folder"]),
-                cache_dir=str(m["cache_dir"]),
-                image_dir=str(m.get("image_dir", str(Path(m["cache_dir"]) / "images"))),
-                ocr_lang=str(m.get("ocr_lang", "eng")),
-                description=str(m.get("description", "")),
-                organization_id=(
-                    str(m["organization_id"]) if m.get("organization_id") else None
-                ),
-            )
-            for m in payload
-        }
-        manual_registry._manuals = new_manuals
-        print(f"[startup] Registry hot-reloaded: {list(new_manuals)}")
+        fresh = load_manual_registry_from_db()
+        manual_registry._manuals = fresh._manuals
+        manual_registry._default_id = fresh._default_id
+        print(f"[registry] Hot-reloaded: {list(fresh._manuals)}")
     except Exception as exc:
-        print(f"[startup] Registry reload failed: {exc}")
+        print(f"[registry] Reload failed: {exc}")
+
+
+_REGISTRY_REFRESH_INTERVAL_SECONDS = 60
+
+
+def _registry_refresh_loop() -> None:
+    while True:
+        time.sleep(_REGISTRY_REFRESH_INTERVAL_SECONDS)
+        _reload_registry_from_db()
 
 
 @app.on_event("startup")
 def _ensure_rag():
     """Warm up pipelines in background so health checks pass immediately."""
-    # Pull latest manuals.json from S3 so add/remove changes survive redeployment.
-    if is_s3_configured() and DISABLE_S3_SYNC != "1":
-        downloaded = download_manual_registry_from_s3(str(_MANUALS_JSON_PATH))
-        if downloaded:
-            _reload_registry_from_json(_MANUALS_JSON_PATH)
+    # Registry itself is already fresh as of process start (loaded at import time above);
+    # keep it that way for the life of the process without needing a restart.
+    threading.Thread(target=_registry_refresh_loop, daemon=True).start()
 
     if INIT_ALL_RAG_ON_STARTUP == "1":
 
@@ -609,7 +595,6 @@ def _run_training_job(job_id: str, manual: ManualConfig) -> None:
         _set(85, "Syncing cache to S3...")
         counts = _sync_to_s3(manual)
         counts["images_to_s3"] = n_imgs
-        upload_manual_registry_to_s3(str(_MANUALS_JSON_PATH))
 
         # Phase 6: remap paths + cache pipeline
         _set(95, "Finalizing pipeline...")
@@ -1329,7 +1314,6 @@ def api_sync_to_s3(manual_id: Optional[str] = None, organization_id: Optional[st
     n_pdfs = upload_manual_pdfs_to_s3(
         manual.manual_id, _resolve_manual_path(manual.pdf_folder)
     )
-    upload_manual_registry_to_s3(str(_MANUALS_JSON_PATH))
     return JSONResponse(
         {
             "ok": True,
@@ -1367,18 +1351,13 @@ def api_pull_from_s3(manual_id: Optional[str] = None, organization_id: Optional[
     )
 
 
-@app.post("/api/sync-registry-from-s3")
-def api_sync_registry_from_s3():
-    """Pull manuals.json from S3 and reload the in-memory registry."""
-    if not is_s3_configured():
-        return JSONResponse(
-            {"ok": False, "error": "S3 not configured."},
-            status_code=400,
-        )
-    downloaded = download_manual_registry_from_s3(str(_MANUALS_JSON_PATH))
-    if downloaded:
-        _reload_registry_from_json(_MANUALS_JSON_PATH)
-    return JSONResponse({"ok": True, "updated": downloaded})
+@app.post("/api/sync-registry")
+def api_sync_registry():
+    """Re-query syspare_rag_manuals and reload the in-memory registry -- makes a manual
+    inserted through another path (or another process) visible here without a restart, ahead
+    of the periodic 60s background refresh."""
+    _reload_registry_from_db()
+    return JSONResponse({"ok": True, "manuals": [m.manual_id for m in manual_registry.list()]})
 
 
 @app.post("/api/query", response_model=QueryResponse)
@@ -3374,40 +3353,19 @@ async def api_add_manual(
         (root / sub).mkdir(parents=True, exist_ok=True)
 
     organization_id = (organization_id or "").strip() or None
+    resolved_ocr_lang = ocr_lang.strip() or "eng"
+    resolved_description = description.strip()
 
-    # Write to manuals.json registry
-    entry = {
-        "manual_id": manual_id,
-        "display_name": resolved_name,
-        "pdf_folder": pdf_folder,
-        "cache_dir": cache_dir,
-        "image_dir": image_dir,
-        "ocr_lang": ocr_lang.strip() or "eng",
-        "description": description.strip(),
-        "organization_id": organization_id,
-    }
-    if _MANUALS_JSON_PATH.exists():
-        existing = json.loads(_MANUALS_JSON_PATH.read_text(encoding="utf-8"))
-    else:
-        existing = [
-            {
-                "manual_id": m.manual_id,
-                "display_name": m.display_name,
-                "pdf_folder": m.pdf_folder,
-                "cache_dir": m.cache_dir,
-                "image_dir": m.image_dir,
-                "ocr_lang": m.ocr_lang,
-                "description": m.description,
-                "organization_id": m.organization_id,
-            }
-            for m in manual_registry.list()
-        ]
-    existing.append(entry)
-    _MANUALS_JSON_PATH.parent.mkdir(parents=True, exist_ok=True)
-    _MANUALS_JSON_PATH.write_text(
-        json.dumps(existing, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+    manual_db.insert_manual(
+        manual_id=manual_id,
+        display_name=resolved_name,
+        pdf_folder=pdf_folder,
+        cache_dir=cache_dir,
+        image_dir=image_dir,
+        ocr_lang=resolved_ocr_lang,
+        description=resolved_description,
+        organization_id=organization_id,
     )
-    upload_manual_registry_to_s3(str(_MANUALS_JSON_PATH))
 
     # Save uploaded PDFs
     pdf_count = 0
@@ -3426,8 +3384,8 @@ async def api_add_manual(
         pdf_folder=pdf_folder,
         cache_dir=cache_dir,
         image_dir=image_dir,
-        ocr_lang=ocr_lang.strip() or "eng",
-        description=description.strip(),
+        ocr_lang=resolved_ocr_lang,
+        description=resolved_description,
         organization_id=organization_id,
     )
     manual_registry._manuals[manual_id] = new_cfg
@@ -3482,18 +3440,10 @@ def api_remove_manual(manual_id: str, organization_id: Optional[str] = None):
     # Remove from in-memory registry
     manual_registry._manuals.pop(manual_id, None)
 
-    # Remove from manuals.json
-    if _MANUALS_JSON_PATH.exists():
-        try:
-            existing = json.loads(_MANUALS_JSON_PATH.read_text(encoding="utf-8"))
-            existing = [m for m in existing if m.get("manual_id") != manual_id]
-            _MANUALS_JSON_PATH.write_text(
-                json.dumps(existing, indent=2, ensure_ascii=False) + "\n",
-                encoding="utf-8",
-            )
-            upload_manual_registry_to_s3(str(_MANUALS_JSON_PATH))
-        except Exception as e:
-            print(f"[{manual_id}] manuals.json update error: {e}")
+    try:
+        manual_db.delete_manual(manual_id)
+    except Exception as e:
+        print(f"[{manual_id}] syspare_rag_manuals delete error: {e}")
 
     return JSONResponse({"ok": True, "manual_id": manual_id, "s3_deleted": s3_deleted})
 

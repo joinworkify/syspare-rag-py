@@ -253,6 +253,9 @@ def load_manual_registry_from_env() -> ManualRegistry:
       - MANUALS_JSON: path to a JSON file with [{manual_id, display_name, pdf_folder,
         cache_dir, image_dir, ocr_lang, description}, ...]
       - DEFAULT_MANUAL_ID: id to mark as default (else first entry).
+
+    Legacy path, kept only for scripts/migrate_manuals_to_db.py to read the old file one last
+    time. Live server startup uses load_manual_registry_from_db() below.
     """
     manuals_json = env("MANUALS_JSON")
     if manuals_json:
@@ -280,4 +283,39 @@ def load_manual_registry_from_env() -> ManualRegistry:
         for m in payload
     ]
     default_id = env("DEFAULT_MANUAL_ID") or None
+    return ManualRegistry(manuals, default_id=default_id)
+
+
+def load_manual_registry_from_db() -> ManualRegistry:
+    """Build a ManualRegistry from the syspare_rag_manuals Postgres table -- the live
+    replacement for load_manual_registry_from_env()/manuals.json. Same DEFAULT_MANUAL_ID env
+    override as before; falls back to whichever row has is_default=true, then the first row."""
+    from syspare_rag import db  # local import: avoids a hard psycopg dependency for any
+    # call site that only needs the dataclasses/ManualRegistry shape (e.g. tests).
+
+    rows = db.list_manuals()
+    if not rows:
+        raise RuntimeError(
+            "syspare_rag_manuals is empty -- run scripts/migrate_manuals_to_db.py first."
+        )
+
+    manuals = [
+        ManualConfig(
+            manual_id=row["manual_id"],
+            display_name=row["display_name"],
+            pdf_folder=row["pdf_folder"],
+            cache_dir=row["cache_dir"],
+            image_dir=row["image_dir"],
+            ocr_lang=row["ocr_lang"],
+            description=row["description"],
+            organization_id=str(row["organization_id"]) if row["organization_id"] else None,
+        )
+        for row in rows
+    ]
+
+    default_id = env("DEFAULT_MANUAL_ID") or None
+    if not default_id:
+        default_row = next((r for r in rows if r["is_default"]), None)
+        default_id = default_row["manual_id"] if default_row else None
+
     return ManualRegistry(manuals, default_id=default_id)
