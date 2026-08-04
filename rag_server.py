@@ -1124,6 +1124,13 @@ class ManualListResponse(BaseModel):
     manuals: List[ManualInfo]
 
 
+class AdminManualInfo(ManualInfo):
+    # Only exposed on the admin-only /api/manuals/all -- the public, org-scoped /api/manuals
+    # deliberately never reveals which org owns a private manual to a caller who can't already
+    # see it.
+    organization_id: Optional[str] = None
+
+
 # -----------------------------
 # Template render helper
 # -----------------------------
@@ -1175,6 +1182,32 @@ def api_list_manuals(organization_id: Optional[str] = None):
             )
         )
     return ManualListResponse(default_manual_id=DEFAULT_MANUAL_ID, manuals=items)
+
+
+@app.get("/api/manuals/all")
+def api_list_manuals_all():
+    """Every manual, global and org-private alike, with organization_id -- backs /manage.
+    Uses manual_registry.list() (the unfiltered, internal/admin method), not list_for(); an
+    admin managing the registry needs to see and act on every org's manuals, not just their
+    own. Not used by sysparse-next or any org-scoped caller -- see api_list_manuals() above
+    for that path."""
+    items = []
+    for m in manual_registry.list():
+        cache_pkl = Path(m.cache_dir) / "text_metadata_df.pkl"
+        pdf_dir = Path(m.pdf_folder)
+        pdf_count = sum(1 for _ in pdf_dir.glob("*.pdf")) if pdf_dir.exists() else 0
+        items.append(
+            AdminManualInfo(
+                manual_id=m.manual_id,
+                display_name=m.display_name,
+                description=m.description,
+                is_default=(m.manual_id == DEFAULT_MANUAL_ID),
+                has_cache=cache_pkl.exists(),
+                pdf_count=pdf_count,
+                organization_id=m.organization_id,
+            )
+        )
+    return {"default_manual_id": DEFAULT_MANUAL_ID, "manuals": items}
 
 
 @app.post("/api/upload-pdf")

@@ -357,7 +357,9 @@
 
       // ── Fetch manuals list ──
       function fetchManuals() {
-        fetch('/api/manuals')
+        // /api/manuals/all -- unfiltered admin listing (includes org-private manuals with
+        // their organization_id), not the org-scoped /api/manuals sysparse-next uses.
+        fetch('/api/manuals/all')
           .then(function (r) { return r.json(); })
           .then(function (data) {
             var manuals = data.manuals || [];
@@ -386,6 +388,9 @@
                   '<div class="flex flex-wrap items-center gap-2 mb-0.5">' +
                     '<span class="font-mono text-sm font-semibold text-white">' + m.manual_id + '</span>' +
                     (m.is_default ? '<span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-amber-500/10 text-amber-400 border border-amber-500/30">default</span>' : '') +
+                    (m.organization_id
+                      ? '<span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-indigo-500/10 text-indigo-400 border border-indigo-500/30" title="' + m.organization_id + '">org: ' + m.organization_id.slice(0, 8) + '</span>'
+                      : '<span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-slate-800 text-slate-400 border border-slate-700">global</span>') +
                   '</div>' +
                   '<p class="text-xs text-slate-400 mb-2">' + (m.display_name || m.manual_id) + '</p>' +
                   '<div class="flex flex-wrap gap-1.5">' +
