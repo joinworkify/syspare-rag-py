@@ -109,11 +109,27 @@ class ManualConfig:
     image_dir: str
     ocr_lang: str = "eng"
     description: str = ""
+    # None = global/shared/curated manual, visible to every caller (every manual predating
+    # this field is and stays None). A real org id = private to that org only -- see
+    # ManualRegistry.list_for()/.resolve() below for the actual access check.
+    organization_id: Optional[str] = None
 
     @property
     def s3_prefix_segment(self) -> str:
         """Path segment used under {S3_RAG_PREFIX}/manuals/<segment>/."""
         return self.manual_id
+
+    def visible_to(self, organization_id: Optional[str]) -> bool:
+        """True if a caller scoped to `organization_id` (None = no org) may see/use this
+        manual. Global manuals (organization_id is None on the manual) are visible to anyone;
+        an org-private manual is visible only to that same org, never to no-org callers."""
+        return self.organization_id is None or self.organization_id == organization_id
+
+
+class ManualNotFoundError(RuntimeError):
+    """Raised by ManualRegistry.resolve() for both 'no such manual' and 'exists but not
+    visible to this caller' -- deliberately the same exception/message shape for both, so a
+    cross-org access attempt looks like a 404, not an information-leaking 403. See resolve()."""
 
 
 class ManualRegistry:
@@ -132,10 +148,21 @@ class ManualRegistry:
         self._default_id = default_id or manuals[0].manual_id
 
     def list(self) -> List[ManualConfig]:
+        """Every registered manual, unfiltered -- for internal/admin call sites that
+        intentionally need everything (e.g. /manage, registry sync), not for anything that
+        responds to an external, caller-scoped request. See list_for() for that case."""
         return list(self._manuals.values())
 
+    def list_for(self, organization_id: Optional[str]) -> List[ManualConfig]:
+        """Every manual visible to a caller scoped to `organization_id` (None = no org):
+        every global manual, plus that org's own private manuals. Use this, not list(), at
+        any call site that's answering an external request (/api/manuals,
+        _available_model_labels())."""
+        return [m for m in self._manuals.values() if m.visible_to(organization_id)]
+
     def get(self, manual_id: Optional[str]) -> ManualConfig:
-        """Return ManualConfig for manual_id, or default when None/empty."""
+        """Return ManualConfig for manual_id, or default when None/empty. No access check --
+        internal/admin use only (mirrors list() above). External call sites use resolve()."""
         if not manual_id:
             return self._manuals[self._default_id]
         if manual_id not in self._manuals:
@@ -143,6 +170,23 @@ class ManualRegistry:
                 f"Unknown manual_id={manual_id!r}; available: {list(self._manuals)}"
             )
         return self._manuals[manual_id]
+
+    def resolve(
+        self, manual_id: Optional[str], organization_id: Optional[str]
+    ) -> ManualConfig:
+        """Like get(), but raises ManualNotFoundError (not KeyError) if the resolved manual
+        exists but isn't visible to `organization_id` -- an org-private manual requested by a
+        different org, or by a no-org caller, is indistinguishable from "doesn't exist" to the
+        caller. The org-less default-manual fallback (manual_id blank/None) never needs this
+        check: the default is always the registry's first-configured manual, and in practice
+        that's always a global one."""
+        manual = self.get(manual_id)
+        if not manual.visible_to(organization_id):
+            raise ManualNotFoundError(
+                f"Unknown manual_id={manual_id!r}; available: "
+                f"{[m.manual_id for m in self.list_for(organization_id)]}"
+            )
+        return manual
 
     @property
     def default(self) -> ManualConfig:
@@ -229,6 +273,9 @@ def load_manual_registry_from_env() -> ManualRegistry:
             image_dir=str(m.get("image_dir", str(Path(m["cache_dir"]) / "images"))),
             ocr_lang=str(m.get("ocr_lang", env("OCR_LANG", "eng"))),
             description=str(m.get("description", "")),
+            organization_id=(
+                str(m["organization_id"]) if m.get("organization_id") else None
+            ),
         )
         for m in payload
     ]
