@@ -1,17 +1,18 @@
 # Render Blueprint: https://render.com/docs/infrastructure-as-code
 # Connect the repo in Render Dashboard and use this for one-click deploy.
+#
+# Docker, not Render's native Python runtime: confirmed live that runtime's build container has
+# a read-only /var/lib/apt/lists, so it cannot install system packages (tesseract-ocr for OCR
+# fallback, poppler-utils, libgl1) at all -- apt-get always fails there, regardless of build
+# command. See Dockerfile at repo root for the actual install steps.
 
 services:
   - type: web
     name: syspare-rag-py
-    runtime: python
-
-    buildCommand: apt-get update && apt-get install -y tesseract-ocr tesseract-ocr-eng tesseract-ocr-mya && pip install -r requirements.txt
-    startCommand: gunicorn rag_server:app --workers 1 --worker-class uvicorn.workers.UvicornWorker --bind 0.0.0.0:$PORT
+    runtime: docker
+    dockerfilePath: ./Dockerfile
 
     envVars:
-      - key: PYTHON_VERSION
-        value: "3.12.0"
       # Set these in Render Dashboard → Environment (or as secret files):
       # - PDF_FOLDER (default: ./data/)
       # - CACHE_DIR (default: ./cache_ym358a)
@@ -19,3 +20,4 @@ services:
       # - PROJECT_ID (Google Cloud project for Vertex AI)
       # - LOCATION (e.g. us-central1)
       # - GOOGLE_APPLICATION_CREDENTIALS (path to service account JSON, or use Render secret file)
+      # - DATABASE_URL (shared Supabase project, backs syspare_rag_manuals)

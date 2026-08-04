@@ -213,14 +213,25 @@
             </svg>
             Available Manuals
           </h2>
-          <button type="button" id="btn-refresh-list"
-            class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-slate-400 hover:text-slate-200 bg-slate-800/60 hover:bg-slate-800 border border-slate-700 transition-all duration-200">
-            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-            </svg>
-            Refresh
-          </button>
+          <div class="flex items-center gap-2">
+            <button type="button" id="btn-sync-registry"
+              title="Re-query the manual registry from the database (picks up manuals added by another process without restarting)"
+              class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-indigo-400 hover:text-indigo-300 bg-indigo-500/10 hover:bg-indigo-500/20 border border-indigo-500/30 transition-all duration-200">
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                  d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4" />
+              </svg>
+              Refresh registry
+            </button>
+            <button type="button" id="btn-refresh-list"
+              class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-slate-400 hover:text-slate-200 bg-slate-800/60 hover:bg-slate-800 border border-slate-700 transition-all duration-200">
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                  d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+              </svg>
+              Refresh
+            </button>
+          </div>
         </div>
 
         <div id="manuals-list" class="divide-y divide-slate-800/60">
@@ -346,7 +357,9 @@
 
       // ── Fetch manuals list ──
       function fetchManuals() {
-        fetch('/api/manuals')
+        // /api/manuals/all -- unfiltered admin listing (includes org-private manuals with
+        // their organization_id), not the org-scoped /api/manuals sysparse-next uses.
+        fetch('/api/manuals/all')
           .then(function (r) { return r.json(); })
           .then(function (data) {
             var manuals = data.manuals || [];
@@ -375,6 +388,9 @@
                   '<div class="flex flex-wrap items-center gap-2 mb-0.5">' +
                     '<span class="font-mono text-sm font-semibold text-white">' + m.manual_id + '</span>' +
                     (m.is_default ? '<span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-amber-500/10 text-amber-400 border border-amber-500/30">default</span>' : '') +
+                    (m.organization_id
+                      ? '<span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-indigo-500/10 text-indigo-400 border border-indigo-500/30" title="' + m.organization_id + '">org: ' + m.organization_id.slice(0, 8) + '</span>'
+                      : '<span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-slate-800 text-slate-400 border border-slate-700">global</span>') +
                   '</div>' +
                   '<p class="text-xs text-slate-400 mb-2">' + (m.display_name || m.manual_id) + '</p>' +
                   '<div class="flex flex-wrap gap-1.5">' +
@@ -383,19 +399,24 @@
                   '</div>' +
                 '</div>' +
                 '<div class="flex items-center gap-2 shrink-0">' +
-                  '<button type="button" data-manual="' + m.manual_id + '"' +
+                  '<button type="button" data-manual="' + m.manual_id + '" data-org="' + (m.organization_id || '') + '"' +
                     ' class="train-btn inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold transition-all duration-200 ' + trainBtnCls + '"' +
                     (isTraining ? ' disabled' : '') + '>' +
                     '<svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>' +
                     (isTraining ? 'Training...' : 'Train') +
                   '</button>' +
-                  '<button type="button" data-manual="' + m.manual_id + '"' +
+                  '<button type="button" data-manual="' + m.manual_id + '" data-org="' + (m.organization_id || '') + '"' +
+                    ' class="pull-s3-btn inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold transition-all duration-200 bg-amber-500/10 text-amber-400 border border-amber-500/30 hover:bg-amber-500/20 hover:text-amber-300 cursor-pointer">' +
+                    '<svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>' +
+                    'Pull from S3' +
+                  '</button>' +
+                  '<button type="button" data-manual="' + m.manual_id + '" data-org="' + (m.organization_id || '') + '"' +
                     ' class="upload-s3-btn inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold transition-all duration-200 bg-teal-500/10 text-teal-400 border border-teal-500/30 hover:bg-teal-500/20 hover:text-teal-300 cursor-pointer">' +
                     '<svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"/></svg>' +
                     'Upload to S3' +
                   '</button>' +
                   (!m.is_default
-                    ? '<button type="button" data-manual="' + m.manual_id + '"' +
+                    ? '<button type="button" data-manual="' + m.manual_id + '" data-org="' + (m.organization_id || '') + '"' +
                         ' class="remove-btn inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold transition-all duration-200 bg-red-500/10 text-red-400 border border-red-500/25 hover:bg-red-500/20 hover:text-red-300 cursor-pointer">' +
                         '<svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>' +
                         'Remove' +
@@ -409,19 +430,25 @@
             document.querySelectorAll('.train-btn').forEach(function (btn) {
               btn.addEventListener('click', function () {
                 if (btn.disabled) return;
-                startTraining(btn.dataset.manual);
+                startTraining(btn.dataset.manual, btn.dataset.org);
               });
             });
 
             document.querySelectorAll('.upload-s3-btn').forEach(function (btn) {
               btn.addEventListener('click', function () {
-                uploadToS3(btn.dataset.manual, btn);
+                uploadToS3(btn.dataset.manual, btn.dataset.org, btn);
+              });
+            });
+
+            document.querySelectorAll('.pull-s3-btn').forEach(function (btn) {
+              btn.addEventListener('click', function () {
+                pullFromS3(btn.dataset.manual, btn.dataset.org, btn);
               });
             });
 
             document.querySelectorAll('.remove-btn').forEach(function (btn) {
               btn.addEventListener('click', function () {
-                openConfirm(btn.dataset.manual);
+                openConfirm(btn.dataset.manual, btn.dataset.org);
               });
             });
           })
@@ -458,9 +485,18 @@
           });
       });
 
+      // organization_id is required to resolve an org-private manual (manual_registry.resolve()
+      // rejects it as "unknown" for any other caller, including these unscoped admin actions) --
+      // every action call below must thread the same data-org value the listing already knows.
+      function orgParam(org) {
+        return org ? '&organization_id=' + encodeURIComponent(org) : '';
+      }
+
       // ── Confirm modal ──
-      function openConfirm(manualId) {
+      var pendingRemoveOrg = null;
+      function openConfirm(manualId, org) {
         pendingRemoveId = manualId;
+        pendingRemoveOrg = org || null;
         modalManualName.textContent = manualId;
         confirmModal.classList.remove('hidden');
       }
@@ -468,6 +504,7 @@
       function closeConfirm() {
         confirmModal.classList.add('hidden');
         pendingRemoveId = null;
+        pendingRemoveOrg = null;
       }
 
       modalCancel.addEventListener('click', closeConfirm);
@@ -476,10 +513,11 @@
       modalConfirm.addEventListener('click', function () {
         if (!pendingRemoveId) return;
         var id = pendingRemoveId;
+        var org = pendingRemoveOrg;
         modalConfirm.disabled = true;
         removeSpinner.classList.remove('hidden');
 
-        fetch('/api/remove-manual?manual_id=' + encodeURIComponent(id), { method: 'POST' })
+        fetch('/api/remove-manual?manual_id=' + encodeURIComponent(id) + orgParam(org), { method: 'POST' })
           .then(function (r) { return r.json(); })
           .then(function (data) {
             if (!data.ok) throw new Error(data.error || 'Remove failed');
@@ -502,12 +540,12 @@
       });
 
       // ── Start training ──
-      function startTraining(manualId) {
+      function startTraining(manualId, org) {
         if (activeJobId) {
           showToast('A training job is already running.', 'error');
           return;
         }
-        fetch('/api/training/start?manual_id=' + encodeURIComponent(manualId), { method: 'POST' })
+        fetch('/api/training/start?manual_id=' + encodeURIComponent(manualId) + orgParam(org), { method: 'POST' })
           .then(function (r) { return r.json(); })
           .then(function (data) {
             if (!data.ok) throw new Error(data.error || 'Could not start training');
@@ -535,7 +573,7 @@
       }
 
       // ── Upload cache to S3 ──
-      function uploadToS3(manualId, btn) {
+      function uploadToS3(manualId, org, btn) {
         var original = btn.innerHTML;
         btn.disabled = true;
         btn.innerHTML =
@@ -543,7 +581,7 @@
             '<circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>' +
             '<path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"></path>' +
           '</svg>Uploading...';
-        fetch('/api/sync-to-s3?manual_id=' + encodeURIComponent(manualId), { method: 'POST' })
+        fetch('/api/sync-to-s3?manual_id=' + encodeURIComponent(manualId) + orgParam(org), { method: 'POST' })
           .then(function (r) { return r.json(); })
           .then(function (data) {
             if (!data.ok) throw new Error(data.error || 'Upload failed');
@@ -555,6 +593,53 @@
             btn.innerHTML = original;
           });
       }
+
+      // ── Pull cache from S3 ──
+      function pullFromS3(manualId, org, btn) {
+        var original = btn.innerHTML;
+        btn.disabled = true;
+        btn.innerHTML =
+          '<svg class="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24">' +
+            '<circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>' +
+            '<path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"></path>' +
+          '</svg>Pulling...';
+        fetch('/api/pull-from-s3?manual_id=' + encodeURIComponent(manualId) + orgParam(org), { method: 'POST' })
+          .then(function (r) { return r.json(); })
+          .then(function (data) {
+            if (!data.ok) throw new Error(data.error || 'Pull failed');
+            showToast(data.message || 'Pulled from S3!', 'success');
+            fetchManuals();
+          })
+          .catch(function (err) { showToast('S3 pull failed: ' + err.message, 'error'); })
+          .finally(function () {
+            btn.disabled = false;
+            btn.innerHTML = original;
+          });
+      }
+
+      // ── Refresh registry (re-query DB, no restart needed) ──
+      var btnSyncRegistry = document.getElementById('btn-sync-registry');
+      btnSyncRegistry.addEventListener('click', function () {
+        var original = btnSyncRegistry.innerHTML;
+        btnSyncRegistry.disabled = true;
+        btnSyncRegistry.innerHTML =
+          '<svg class="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24">' +
+            '<circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>' +
+            '<path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"></path>' +
+          '</svg>Refreshing...';
+        fetch('/api/sync-registry', { method: 'POST' })
+          .then(function (r) { return r.json(); })
+          .then(function (data) {
+            if (!data.ok) throw new Error(data.error || 'Refresh failed');
+            showToast('Registry refreshed: ' + data.manuals.length + ' manual(s).', 'success');
+            fetchManuals();
+          })
+          .catch(function (err) { showToast('Registry refresh failed: ' + err.message, 'error'); })
+          .finally(function () {
+            btnSyncRegistry.disabled = false;
+            btnSyncRegistry.innerHTML = original;
+          });
+      });
 
       // ── Poll training ──
       function pollTraining() {

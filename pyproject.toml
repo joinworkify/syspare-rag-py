@@ -23,6 +23,7 @@ dependencies = [
     "opencv-python-headless>=4.13.0.92",
     "pandas>=3.0.1",
     "pillow>=12.1.1",
+    "psycopg[binary,pool]>=3.3.4",
     "pymupdf>=1.27.1",
     "pypdf>=6.7.2",
     "pypdf2>=3.0.1",

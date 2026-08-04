@@ -33,10 +33,12 @@ from pipeline import (
     has_insufficient_marker,
     strip_insufficient_marker,
 )
+from syspare_rag import db as manual_db
 from syspare_rag.config import (
     ManualConfig,
+    ManualNotFoundError,
     ManualRegistry,
-    load_manual_registry_from_env,
+    load_manual_registry_from_db,
 )
 from utils import get_gemini_response, _print_progress
 
@@ -51,7 +53,6 @@ try:
         download_chat_history_session,
         download_manual_cache_from_s3,
         download_manual_pdfs_from_s3,
-        download_manual_registry_from_s3,
         list_chat_history_sessions,
         list_chat_log_records,
         upload_chat_history_session,
@@ -62,7 +63,6 @@ try:
         upload_manual_cache_to_s3,
         upload_manual_pdf_file_to_s3,
         upload_manual_pdfs_to_s3,
-        upload_manual_registry_to_s3,
     )
 except ImportError:
     is_s3_configured = lambda: False
@@ -72,7 +72,6 @@ except ImportError:
     download_chat_history_session = lambda *a, **k: None
     download_manual_cache_from_s3 = lambda *a, **k: 0
     download_manual_pdfs_from_s3 = lambda *a, **k: 0
-    download_manual_registry_from_s3 = lambda *a, **k: False
     list_chat_history_sessions = lambda *a, **k: []
     list_chat_log_records = lambda *a, **k: []
     upload_chat_history_session = lambda *a, **k: False
@@ -81,7 +80,6 @@ except ImportError:
     upload_manual_cache_to_s3 = lambda *a, **k: 0
     upload_manual_pdfs_to_s3 = lambda *a, **k: 0
     upload_manual_pdf_file_to_s3 = lambda *a, **k: False
-    upload_manual_registry_to_s3 = lambda *a, **k: False
     update_chat_log_feedback = lambda *a, **k: False
     delete_manual_from_s3 = lambda *a, **k: 0
 
@@ -122,15 +120,9 @@ RETRIEVAL_EXPANDED_MESSAGE = (
     "First pass had insufficient detail, so retrieval was expanded before answering."
 )
 
-# Path to the manuals registry JSON (written by add-manual API)
-_MANUALS_JSON_PATH: Path = (
-    Path(_env("MANUALS_JSON", ""))
-    if _env("MANUALS_JSON", "")
-    else Path(__file__).resolve().parent / "manuals" / "manuals.json"
-)
-
-# Manual registry: list of available manuals + default selection.
-manual_registry: ManualRegistry = load_manual_registry_from_env()
+# Manual registry: list of available manuals + default selection, loaded from the
+# syspare_rag_manuals Postgres table (shared Supabase project with workify).
+manual_registry: ManualRegistry = load_manual_registry_from_db()
 DEFAULT_MANUAL = manual_registry.default
 DEFAULT_MANUAL_ID = manual_registry.default_id
 
@@ -252,17 +244,25 @@ def _remember_pipeline(manual_id: str, rag: MultimodalRAGPipeline) -> None:
             )
 
 
-def _resolve_manual(manual_id: Optional[str]) -> ManualConfig:
-    """Return ManualConfig for an optional manual_id; default if blank."""
+def _resolve_manual(
+    manual_id: Optional[str], organization_id: Optional[str] = None
+) -> ManualConfig:
+    """Return ManualConfig for an optional manual_id; default if blank. Raises
+    ManualNotFoundError (a RuntimeError subclass, so existing `except RuntimeError` call sites
+    keep working unchanged) for both an unknown manual_id AND a known-but-not-visible-to-this-
+    caller one (wrong/missing organization_id on a private manual) -- deliberately the same
+    shape for both, see ManualRegistry.resolve()'s docstring. Callers that want a 404 (not the
+    pre-existing 400) for this specifically should catch ManualNotFoundError before the more
+    general RuntimeError."""
     try:
-        return manual_registry.get(manual_id)
+        return manual_registry.resolve(manual_id, organization_id)
     except KeyError as exc:
-        raise RuntimeError(str(exc))
+        raise ManualNotFoundError(str(exc))
 
 
-def _available_model_labels() -> List[str]:
-    """Display names of all registered manuals, for cross-model awareness."""
-    return [m.display_name for m in manual_registry.list()]
+def _available_model_labels(organization_id: Optional[str] = None) -> List[str]:
+    """Display names of manuals visible to this caller, for cross-model awareness."""
+    return [m.display_name for m in manual_registry.list_for(organization_id)]
 
 
 def _sync_from_s3(manual: ManualConfig) -> None:
@@ -419,8 +419,16 @@ def _build_rag_config(manual: ManualConfig) -> RagConfig:
 
 
 def _get_rag(manual_id: Optional[str] = None) -> MultimodalRAGPipeline:
-    """Return a cached pipeline for the requested manual, loading or building lazily."""
-    manual = _resolve_manual(manual_id)
+    """Return a cached pipeline for the requested manual, loading or building lazily.
+    Every caller already resolved (and, for external requests, org-authorized via
+    _resolve_manual) a concrete manual_id before reaching here -- this uses the unchecked
+    manual_registry.get() deliberately, not _resolve_manual(), so this internal, already-
+    trusted lookup never re-applies (and can't accidentally fail) the org visibility check a
+    second time."""
+    try:
+        manual = manual_registry.get(manual_id)
+    except KeyError as exc:
+        raise ManualNotFoundError(str(exc))
     mid = manual.manual_id
 
     # Fast path: already loaded
@@ -476,36 +484,34 @@ def _get_rag(manual_id: Optional[str] = None) -> MultimodalRAGPipeline:
             raise RuntimeError(str(e))
 
 
-def _reload_registry_from_json(path: Path) -> None:
-    """Hot-reload manual_registry from a manuals.json file on disk."""
+def _reload_registry_from_db() -> None:
+    """Hot-reload manual_registry from syspare_rag_manuals -- called by /api/sync-registry and
+    the periodic background refresh below, so a manual inserted through another path (or a
+    second syspare-rag-py instance) becomes visible here without a restart."""
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-        new_manuals = {
-            m["manual_id"]: ManualConfig(
-                manual_id=str(m["manual_id"]),
-                display_name=str(m.get("display_name", m["manual_id"])),
-                pdf_folder=str(m["pdf_folder"]),
-                cache_dir=str(m["cache_dir"]),
-                image_dir=str(m.get("image_dir", str(Path(m["cache_dir"]) / "images"))),
-                ocr_lang=str(m.get("ocr_lang", "eng")),
-                description=str(m.get("description", "")),
-            )
-            for m in payload
-        }
-        manual_registry._manuals = new_manuals
-        print(f"[startup] Registry hot-reloaded: {list(new_manuals)}")
+        fresh = load_manual_registry_from_db()
+        manual_registry._manuals = fresh._manuals
+        manual_registry._default_id = fresh._default_id
+        print(f"[registry] Hot-reloaded: {list(fresh._manuals)}")
     except Exception as exc:
-        print(f"[startup] Registry reload failed: {exc}")
+        print(f"[registry] Reload failed: {exc}")
+
+
+_REGISTRY_REFRESH_INTERVAL_SECONDS = 60
+
+
+def _registry_refresh_loop() -> None:
+    while True:
+        time.sleep(_REGISTRY_REFRESH_INTERVAL_SECONDS)
+        _reload_registry_from_db()
 
 
 @app.on_event("startup")
 def _ensure_rag():
     """Warm up pipelines in background so health checks pass immediately."""
-    # Pull latest manuals.json from S3 so add/remove changes survive redeployment.
-    if is_s3_configured() and DISABLE_S3_SYNC != "1":
-        downloaded = download_manual_registry_from_s3(str(_MANUALS_JSON_PATH))
-        if downloaded:
-            _reload_registry_from_json(_MANUALS_JSON_PATH)
+    # Registry itself is already fresh as of process start (loaded at import time above);
+    # keep it that way for the life of the process without needing a restart.
+    threading.Thread(target=_registry_refresh_loop, daemon=True).start()
 
     if INIT_ALL_RAG_ON_STARTUP == "1":
 
@@ -589,7 +595,6 @@ def _run_training_job(job_id: str, manual: ManualConfig) -> None:
         _set(85, "Syncing cache to S3...")
         counts = _sync_to_s3(manual)
         counts["images_to_s3"] = n_imgs
-        upload_manual_registry_to_s3(str(_MANUALS_JSON_PATH))
 
         # Phase 6: remap paths + cache pipeline
         _set(95, "Finalizing pipeline...")
@@ -616,7 +621,13 @@ def _safe_image_url(img_path: str, manual_id: Optional[str] = None) -> str:
     """
     if img_path.startswith("http"):
         return img_path
-    manual = _resolve_manual(manual_id)
+    # Same reasoning as _get_rag(): manual_id here is always an already-authorized concrete id
+    # threaded down from a route that already called _resolve_manual, so this is the
+    # unchecked, internal-trust lookup deliberately, not a second org-visibility check.
+    try:
+        manual = manual_registry.get(manual_id)
+    except KeyError as exc:
+        raise ManualNotFoundError(str(exc))
     p = Path(img_path)
     root = Path(manual.image_dir).resolve()
 
@@ -888,6 +899,7 @@ class QueryRequest(BaseModel):
     # "auto" | "en" | "my"
     answer_language: str = "auto"
     manual_id: Optional[str] = None
+    organization_id: Optional[str] = None
 
 
 class QueryResponse(BaseModel):
@@ -908,6 +920,7 @@ class MyanmarQueryRequest(BaseModel):
     temp: float = 0.5
     include_intermediate_english: bool = False
     manual_id: Optional[str] = None
+    organization_id: Optional[str] = None
 
 
 class MyanmarQueryResponse(BaseModel):
@@ -926,6 +939,7 @@ class GenerateQuestionRequest(BaseModel):
     language: str
     count: int = 1
     manual_id: Optional[str] = None
+    organization_id: Optional[str] = None
 
 
 class JapaneseQueryRequest(BaseModel):
@@ -935,6 +949,7 @@ class JapaneseQueryRequest(BaseModel):
     temp: float = 0.5
     include_intermediate_english: bool = False
     manual_id: Optional[str] = None
+    organization_id: Optional[str] = None
 
 
 class JapaneseQueryResponse(BaseModel):
@@ -966,6 +981,7 @@ class QueryWithOptionalImageRequest(BaseModel):
     # "auto" | "en" | "my"
     answer_language: str = "auto"
     manual_id: Optional[str] = None
+    organization_id: Optional[str] = None
 
 
 class DiagnosticAction(BaseModel):
@@ -999,6 +1015,7 @@ class DiagnosticPayload(BaseModel):
     # "auto" | "en" | "my"
     answer_language: str = "auto"
     manual_id: Optional[str] = None
+    organization_id: Optional[str] = None
 
 
 class DiagnosticEnvelope(BaseModel):
@@ -1030,6 +1047,7 @@ class ChatRequest(BaseModel):
     temp: float = 0.4
     answer_language: str = "auto"
     manual_id: Optional[str] = None
+    organization_id: Optional[str] = None
     log_response: bool = True
 
 
@@ -1106,6 +1124,13 @@ class ManualListResponse(BaseModel):
     manuals: List[ManualInfo]
 
 
+class AdminManualInfo(ManualInfo):
+    # Only exposed on the admin-only /api/manuals/all -- the public, org-scoped /api/manuals
+    # deliberately never reveals which org owns a private manual to a caller who can't already
+    # see it.
+    organization_id: Optional[str] = None
+
+
 # -----------------------------
 # Template render helper
 # -----------------------------
@@ -1138,10 +1163,11 @@ def v1_page():
 
 
 @app.get("/api/manuals", response_model=ManualListResponse)
-def api_list_manuals():
-    """List available manuals, including which has a built cache locally."""
+def api_list_manuals(organization_id: Optional[str] = None):
+    """List manuals visible to this caller: every global manual, plus that org's own private
+    manuals (or just global manuals for a no-org caller -- see ManualRegistry.list_for())."""
     items: List[ManualInfo] = []
-    for m in manual_registry.list():
+    for m in manual_registry.list_for(organization_id):
         cache_pkl = Path(m.cache_dir) / "text_metadata_df.pkl"
         pdf_dir = Path(m.pdf_folder)
         pdf_count = sum(1 for _ in pdf_dir.glob("*.pdf")) if pdf_dir.exists() else 0
@@ -1158,10 +1184,37 @@ def api_list_manuals():
     return ManualListResponse(default_manual_id=DEFAULT_MANUAL_ID, manuals=items)
 
 
+@app.get("/api/manuals/all")
+def api_list_manuals_all():
+    """Every manual, global and org-private alike, with organization_id -- backs /manage.
+    Uses manual_registry.list() (the unfiltered, internal/admin method), not list_for(); an
+    admin managing the registry needs to see and act on every org's manuals, not just their
+    own. Not used by sysparse-next or any org-scoped caller -- see api_list_manuals() above
+    for that path."""
+    items = []
+    for m in manual_registry.list():
+        cache_pkl = Path(m.cache_dir) / "text_metadata_df.pkl"
+        pdf_dir = Path(m.pdf_folder)
+        pdf_count = sum(1 for _ in pdf_dir.glob("*.pdf")) if pdf_dir.exists() else 0
+        items.append(
+            AdminManualInfo(
+                manual_id=m.manual_id,
+                display_name=m.display_name,
+                description=m.description,
+                is_default=(m.manual_id == DEFAULT_MANUAL_ID),
+                has_cache=cache_pkl.exists(),
+                pdf_count=pdf_count,
+                organization_id=m.organization_id,
+            )
+        )
+    return {"default_manual_id": DEFAULT_MANUAL_ID, "manuals": items}
+
+
 @app.post("/api/upload-pdf")
 async def upload_pdf(
     file: UploadFile = File(...),
     manual_id: Optional[str] = Form(None),
+    organization_id: Optional[str] = Form(None),
 ):
     """Upload a PDF: save under the chosen manual's PDF folder and to S3."""
     if not file.filename or not file.filename.lower().endswith(".pdf"):
@@ -1170,7 +1223,9 @@ async def upload_pdf(
             status_code=400,
         )
     try:
-        manual = _resolve_manual(manual_id)
+        manual = _resolve_manual(manual_id, organization_id)
+    except ManualNotFoundError as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=404)
     except RuntimeError as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
 
@@ -1192,10 +1247,12 @@ async def upload_pdf(
 
 
 @app.post("/api/clean-cache")
-def api_clean_cache(manual_id: Optional[str] = None):
+def api_clean_cache(manual_id: Optional[str] = None, organization_id: Optional[str] = None):
     """Delete local cache for one manual and reset its in-memory pipeline."""
     try:
-        manual = _resolve_manual(manual_id)
+        manual = _resolve_manual(manual_id, organization_id)
+    except ManualNotFoundError as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=404)
     except RuntimeError as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
 
@@ -1217,7 +1274,9 @@ def api_clean_cache(manual_id: Optional[str] = None):
 
 @app.post("/api/build-cache")
 def api_build_cache(
-    manual_id: Optional[str] = None, skip_existing_images: bool = False
+    manual_id: Optional[str] = None,
+    skip_existing_images: bool = False,
+    organization_id: Optional[str] = None,
 ):
     """Force rebuild metadata for one manual from PDFs and sync cache + PDFs to S3.
 
@@ -1226,7 +1285,9 @@ def api_build_cache(
     the previous cache and re-uploaded to S3 if still local.
     """
     try:
-        manual = _resolve_manual(manual_id)
+        manual = _resolve_manual(manual_id, organization_id)
+    except ManualNotFoundError as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=404)
     except RuntimeError as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
 
@@ -1265,10 +1326,12 @@ def api_build_cache(
 
 
 @app.post("/api/sync-to-s3")
-def api_sync_to_s3(manual_id: Optional[str] = None):
+def api_sync_to_s3(manual_id: Optional[str] = None, organization_id: Optional[str] = None):
     """Upload one manual's local cache and PDFs to S3."""
     try:
-        manual = _resolve_manual(manual_id)
+        manual = _resolve_manual(manual_id, organization_id)
+    except ManualNotFoundError as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=404)
     except RuntimeError as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
 
@@ -1284,7 +1347,6 @@ def api_sync_to_s3(manual_id: Optional[str] = None):
     n_pdfs = upload_manual_pdfs_to_s3(
         manual.manual_id, _resolve_manual_path(manual.pdf_folder)
     )
-    upload_manual_registry_to_s3(str(_MANUALS_JSON_PATH))
     return JSONResponse(
         {
             "ok": True,
@@ -1297,10 +1359,12 @@ def api_sync_to_s3(manual_id: Optional[str] = None):
 
 
 @app.post("/api/pull-from-s3")
-def api_pull_from_s3(manual_id: Optional[str] = None):
+def api_pull_from_s3(manual_id: Optional[str] = None, organization_id: Optional[str] = None):
     """Download one manual's cache and PDFs from S3 into local dirs."""
     try:
-        manual = _resolve_manual(manual_id)
+        manual = _resolve_manual(manual_id, organization_id)
+    except ManualNotFoundError as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=404)
     except RuntimeError as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
 
@@ -1320,18 +1384,13 @@ def api_pull_from_s3(manual_id: Optional[str] = None):
     )
 
 
-@app.post("/api/sync-registry-from-s3")
-def api_sync_registry_from_s3():
-    """Pull manuals.json from S3 and reload the in-memory registry."""
-    if not is_s3_configured():
-        return JSONResponse(
-            {"ok": False, "error": "S3 not configured."},
-            status_code=400,
-        )
-    downloaded = download_manual_registry_from_s3(str(_MANUALS_JSON_PATH))
-    if downloaded:
-        _reload_registry_from_json(_MANUALS_JSON_PATH)
-    return JSONResponse({"ok": True, "updated": downloaded})
+@app.post("/api/sync-registry")
+def api_sync_registry():
+    """Re-query syspare_rag_manuals and reload the in-memory registry -- makes a manual
+    inserted through another path (or another process) visible here without a restart, ahead
+    of the periodic 60s background refresh."""
+    _reload_registry_from_db()
+    return JSONResponse({"ok": True, "manuals": [m.manual_id for m in manual_registry.list()]})
 
 
 @app.post("/api/query", response_model=QueryResponse)
@@ -1348,7 +1407,10 @@ def api_query(payload: QueryRequest):
       }
     """
     try:
-        manual = _resolve_manual(payload.manual_id)
+        manual = _resolve_manual(payload.manual_id, payload.organization_id)
+    except ManualNotFoundError as e:
+        return JSONResponse({"detail": str(e)}, status_code=404)
+    try:
         rag = _get_rag(manual.manual_id)
     except RuntimeError as e:
         return JSONResponse(
@@ -1370,7 +1432,7 @@ def api_query(payload: QueryRequest):
                 payload.question, payload.answer_language
             ),
             manual_label=manual.display_name,
-            available_models=_available_model_labels(),
+            available_models=_available_model_labels(payload.organization_id),
         )
     except RuntimeError as e:
         return JSONResponse({"detail": str(e)}, status_code=503)
@@ -1413,7 +1475,10 @@ def api_query_myanmar(payload: MyanmarQueryRequest):
         )
 
     try:
-        manual = _resolve_manual(payload.manual_id)
+        manual = _resolve_manual(payload.manual_id, payload.organization_id)
+    except ManualNotFoundError as e:
+        return JSONResponse({"detail": str(e)}, status_code=404)
+    try:
         rag = _get_rag(manual.manual_id)
     except RuntimeError as e:
         return JSONResponse(
@@ -1433,7 +1498,7 @@ def api_query_myanmar(payload: MyanmarQueryRequest):
             temperature=payload.temp,
             target_language="my",
             manual_label=manual.display_name,
-            available_models=_available_model_labels(),
+            available_models=_available_model_labels(payload.organization_id),
         )
     except RuntimeError as e:
         return JSONResponse({"detail": str(e)}, status_code=503)
@@ -1471,7 +1536,10 @@ def api_query_japanese(payload: JapaneseQueryRequest):
         )
 
     try:
-        manual = _resolve_manual(payload.manual_id)
+        manual = _resolve_manual(payload.manual_id, payload.organization_id)
+    except ManualNotFoundError as e:
+        return JSONResponse({"detail": str(e)}, status_code=404)
+    try:
         rag = _get_rag(manual.manual_id)
     except RuntimeError as e:
         return JSONResponse(
@@ -1491,7 +1559,7 @@ def api_query_japanese(payload: JapaneseQueryRequest):
             temperature=payload.temp,
             target_language="ja",
             manual_label=manual.display_name,
-            available_models=_available_model_labels(),
+            available_models=_available_model_labels(payload.organization_id),
         )
     except RuntimeError as e:
         return JSONResponse({"detail": str(e)}, status_code=503)
@@ -1532,7 +1600,10 @@ def api_query_with_optional_image(payload: QueryWithOptionalImageRequest):
       }
     """
     try:
-        manual = _resolve_manual(payload.manual_id)
+        manual = _resolve_manual(payload.manual_id, payload.organization_id)
+    except ManualNotFoundError as e:
+        return JSONResponse({"detail": str(e)}, status_code=404)
+    try:
         rag = _get_rag(manual.manual_id)
     except RuntimeError as e:
         return JSONResponse(
@@ -1599,6 +1670,7 @@ async def api_query_upload(
     answer_language: str = Form("auto"),
     image: Optional[UploadFile] = File(None),
     manual_id: Optional[str] = Form(None),
+    organization_id: Optional[str] = Form(None),
 ):
     """
     Multipart endpoint: question + optional uploaded image.
@@ -1606,7 +1678,10 @@ async def api_query_upload(
     Answer is generated from text-context (same behavior as /api/query-with-image).
     """
     try:
-        manual = _resolve_manual(manual_id)
+        manual = _resolve_manual(manual_id, organization_id)
+    except ManualNotFoundError as e:
+        return JSONResponse({"detail": str(e)}, status_code=404)
+    try:
         rag = _get_rag(manual.manual_id)
     except RuntimeError as e:
         return JSONResponse(
@@ -1675,8 +1750,8 @@ def api_v1_diagnose(payload: DiagnosticPayload):
     v1 diagnostic endpoint.
     Returns structured JSON used by the /v1 dashboard UI.
     """
+    manual = _resolve_manual(payload.manual_id, payload.organization_id)
     try:
-        manual = _resolve_manual(payload.manual_id)
         rag = _get_rag(manual.manual_id)
     except RuntimeError as e:
         raise RuntimeError(
@@ -1767,6 +1842,7 @@ async def api_v1_diagnose_upload(
     answer_language: str = Form("auto"),
     image: Optional[UploadFile] = File(None),
     manual_id: Optional[str] = Form(None),
+    organization_id: Optional[str] = Form(None),
 ):
     """
     Multipart variant of v1 diagnostic endpoint that accepts an optional image.
@@ -1774,7 +1850,10 @@ async def api_v1_diagnose_upload(
     summary is still based on text + image descriptions.
     """
     try:
-        manual = _resolve_manual(manual_id)
+        manual = _resolve_manual(manual_id, organization_id)
+    except ManualNotFoundError as e:
+        return JSONResponse({"detail": str(e)}, status_code=404)
+    try:
         rag = _get_rag(manual.manual_id)
     except RuntimeError as e:
         return JSONResponse(
@@ -1875,9 +1954,9 @@ async def api_v1_diagnose_upload(
 
 
 @app.get("/", response_class=HTMLResponse)
-def home(manual_id: Optional[str] = None):
+def home(manual_id: Optional[str] = None, organization_id: Optional[str] = None):
     """Legacy server-rendered single-turn RAG smoke-test page."""
-    manual = _resolve_manual(manual_id)
+    manual = _resolve_manual(manual_id, organization_id)
     html = _render_page(
         ran=False,
         q="Every 2 years what should we do for the safety precuations of YM358A tractor?",
@@ -1889,6 +1968,7 @@ def home(manual_id: Optional[str] = None):
         texts=[],
         images=[],
         selected_manual_id=manual.manual_id,
+        selected_organization_id=organization_id,
     )
     return HTMLResponse(html)
 
@@ -1903,10 +1983,33 @@ def query(
     answer_language: str = Form("auto"),
     image: Optional[UploadFile] = File(None),
     manual_id: Optional[str] = Form(None),
+    organization_id: Optional[str] = Form(None),
 ):
     try:
-        manual = _resolve_manual(manual_id)
+        manual = _resolve_manual(manual_id, organization_id)
         rag = _get_rag(manual.manual_id)
+    except ManualNotFoundError as e:
+        # Caught separately from the generic RuntimeError below (see _resolve_manual's own
+        # docstring) -- an org-private manual selected without the matching organization_id is
+        # not a GCP/env-var problem, and telling someone to check PROJECT_ID for it just sends
+        # them chasing the wrong thing.
+        html = _render_page(
+            ran=True,
+            q=q,
+            top_k_text=top_k_text,
+            top_k_img=top_k_img,
+            temp=temp,
+            answer_language=answer_language,
+            answer=(
+                f"{e}\n\nThis manual is org-private. Enter its owning organization's id in the "
+                "Organization ID field above and try again."
+            ),
+            texts=[],
+            images=[],
+            selected_manual_id=manual_id or DEFAULT_MANUAL_ID,
+            selected_organization_id=organization_id,
+        )
+        return HTMLResponse(html)
     except RuntimeError as e:
         html = _render_page(
             ran=True,
@@ -1919,6 +2022,7 @@ def query(
             texts=[],
             images=[],
             selected_manual_id=manual_id or DEFAULT_MANUAL_ID,
+            selected_organization_id=organization_id,
         )
         return HTMLResponse(html)
 
@@ -1980,6 +2084,7 @@ def query(
         texts=_normalize_text_matches(text_matches),
         images=_normalize_image_matches(image_matches, manual.manual_id),
         selected_manual_id=manual.manual_id,
+        selected_organization_id=organization_id,
     )
     return HTMLResponse(html)
 
@@ -2416,7 +2521,10 @@ def api_chat(payload: ChatRequest, request: Request):
         return limited
 
     try:
-        manual = _resolve_manual(payload.manual_id)
+        manual = _resolve_manual(payload.manual_id, payload.organization_id)
+    except ManualNotFoundError as e:
+        return JSONResponse({"detail": str(e)}, status_code=404)
+    try:
         rag = _get_rag(manual.manual_id)
     except RuntimeError as e:
         return JSONResponse({"detail": f"RAG not ready: {e}"}, status_code=503)
@@ -2445,7 +2553,7 @@ def api_chat(payload: ChatRequest, request: Request):
         "Translations for the farmer are handled after this step."
     )
 
-    available_models = _available_model_labels()
+    available_models = _available_model_labels(payload.organization_id)
     available_line = (
         f"Manuals/models available in this system: {', '.join(available_models)}.\n"
         if available_models
@@ -2673,9 +2781,9 @@ def debug_generator_page():
 
 
 @app.get("/api/models")
-def get_available_models(manual_id: Optional[str] = None):
+def get_available_models(manual_id: Optional[str] = None, organization_id: Optional[str] = None):
     try:
-        manual = _resolve_manual(manual_id)
+        manual = _resolve_manual(manual_id, organization_id)
         rag = _get_rag(manual.manual_id)
         df = rag.text_metadata_df
         if df is not None and not df.empty:
@@ -2693,7 +2801,7 @@ def get_available_models(manual_id: Optional[str] = None):
         print(f"Error fetching models from cache: {e}")
     # Fallback: scan PDF folder for actual files
     try:
-        resolved = _resolve_manual(manual_id)
+        resolved = _resolve_manual(manual_id, organization_id)
         pdf_files = sorted(Path(resolved.pdf_folder).glob("*.pdf"))
         if pdf_files:
             return {
@@ -2724,7 +2832,10 @@ def api_generate_random_question(payload: GenerateQuestionRequest, request: Requ
         return limited
 
     try:
-        manual = _resolve_manual(payload.manual_id)
+        manual = _resolve_manual(payload.manual_id, payload.organization_id)
+    except ManualNotFoundError as e:
+        return JSONResponse({"error": str(e)}, status_code=404)
+    try:
         rag = _get_rag(manual.manual_id)
     except RuntimeError as e:
         return JSONResponse(
@@ -3270,9 +3381,13 @@ async def api_add_manual(
     display_name: str = Form(""),
     ocr_lang: str = Form("eng"),
     description: str = Form(""),
+    organization_id: Optional[str] = Form(None),
     files: List[UploadFile] = File(default=[]),
 ):
-    """Add a new manual to the registry, create directories, and optionally save uploaded PDFs."""
+    """Add a new manual to the registry, create directories, and optionally save uploaded PDFs.
+    organization_id unset (the default, and what the existing /manage admin UI keeps using)
+    creates a global/shared manual, same as before this field existed. A real organization_id
+    makes the new manual private to that org -- see ManualConfig.organization_id."""
     manual_id = manual_id.strip()
     if not re.fullmatch(r"[a-zA-Z0-9_\-]+", manual_id):
         return JSONResponse(
@@ -3295,37 +3410,20 @@ async def api_add_manual(
     for sub in (pdf_folder, cache_dir, image_dir):
         (root / sub).mkdir(parents=True, exist_ok=True)
 
-    # Write to manuals.json registry
-    entry = {
-        "manual_id": manual_id,
-        "display_name": resolved_name,
-        "pdf_folder": pdf_folder,
-        "cache_dir": cache_dir,
-        "image_dir": image_dir,
-        "ocr_lang": ocr_lang.strip() or "eng",
-        "description": description.strip(),
-    }
-    if _MANUALS_JSON_PATH.exists():
-        existing = json.loads(_MANUALS_JSON_PATH.read_text(encoding="utf-8"))
-    else:
-        existing = [
-            {
-                "manual_id": m.manual_id,
-                "display_name": m.display_name,
-                "pdf_folder": m.pdf_folder,
-                "cache_dir": m.cache_dir,
-                "image_dir": m.image_dir,
-                "ocr_lang": m.ocr_lang,
-                "description": m.description,
-            }
-            for m in manual_registry.list()
-        ]
-    existing.append(entry)
-    _MANUALS_JSON_PATH.parent.mkdir(parents=True, exist_ok=True)
-    _MANUALS_JSON_PATH.write_text(
-        json.dumps(existing, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+    organization_id = (organization_id or "").strip() or None
+    resolved_ocr_lang = ocr_lang.strip() or "eng"
+    resolved_description = description.strip()
+
+    manual_db.insert_manual(
+        manual_id=manual_id,
+        display_name=resolved_name,
+        pdf_folder=pdf_folder,
+        cache_dir=cache_dir,
+        image_dir=image_dir,
+        ocr_lang=resolved_ocr_lang,
+        description=resolved_description,
+        organization_id=organization_id,
     )
-    upload_manual_registry_to_s3(str(_MANUALS_JSON_PATH))
 
     # Save uploaded PDFs
     pdf_count = 0
@@ -3344,8 +3442,9 @@ async def api_add_manual(
         pdf_folder=pdf_folder,
         cache_dir=cache_dir,
         image_dir=image_dir,
-        ocr_lang=ocr_lang.strip() or "eng",
-        description=description.strip(),
+        ocr_lang=resolved_ocr_lang,
+        description=resolved_description,
+        organization_id=organization_id,
     )
     manual_registry._manuals[manual_id] = new_cfg
 
@@ -3363,11 +3462,13 @@ async def api_add_manual(
 
 
 @app.post("/api/remove-manual")
-def api_remove_manual(manual_id: str):
+def api_remove_manual(manual_id: str, organization_id: Optional[str] = None):
     """Remove a manual: clear pipeline, delete local dirs, remove from manuals.json and S3."""
     manual_id = manual_id.strip()
     try:
-        manual = _resolve_manual(manual_id)
+        manual = _resolve_manual(manual_id, organization_id)
+    except ManualNotFoundError as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=404)
     except RuntimeError as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
 
@@ -3397,27 +3498,21 @@ def api_remove_manual(manual_id: str):
     # Remove from in-memory registry
     manual_registry._manuals.pop(manual_id, None)
 
-    # Remove from manuals.json
-    if _MANUALS_JSON_PATH.exists():
-        try:
-            existing = json.loads(_MANUALS_JSON_PATH.read_text(encoding="utf-8"))
-            existing = [m for m in existing if m.get("manual_id") != manual_id]
-            _MANUALS_JSON_PATH.write_text(
-                json.dumps(existing, indent=2, ensure_ascii=False) + "\n",
-                encoding="utf-8",
-            )
-            upload_manual_registry_to_s3(str(_MANUALS_JSON_PATH))
-        except Exception as e:
-            print(f"[{manual_id}] manuals.json update error: {e}")
+    try:
+        manual_db.delete_manual(manual_id)
+    except Exception as e:
+        print(f"[{manual_id}] syspare_rag_manuals delete error: {e}")
 
     return JSONResponse({"ok": True, "manual_id": manual_id, "s3_deleted": s3_deleted})
 
 
 @app.post("/api/training/start")
-def api_training_start(manual_id: Optional[str] = None):
+def api_training_start(manual_id: Optional[str] = None, organization_id: Optional[str] = None):
     """Kick off a background training job for one manual. Returns job_id."""
     try:
-        manual = _resolve_manual(manual_id)
+        manual = _resolve_manual(manual_id, organization_id)
+    except ManualNotFoundError as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=404)
     except RuntimeError as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
 

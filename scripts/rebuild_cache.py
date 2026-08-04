@@ -36,7 +36,7 @@ from vertexai.generative_models import GenerationConfig  # noqa: E402
 
 from pipeline import MultimodalRAGPipeline  # noqa: E402
 from syspare_rag.config import (  # noqa: E402
-    load_manual_registry_from_env,
+    load_manual_registry_from_db,
     load_rag_config_from_env,
 )
 
@@ -80,7 +80,7 @@ def main() -> int:
     _resolve_credentials()
 
     if args.list_manuals:
-        registry = load_manual_registry_from_env()
+        registry = load_manual_registry_from_db()
         print("Registered manuals:")
         for m in registry.list():
             print(
@@ -94,7 +94,7 @@ def main() -> int:
 
     manual = None
     if args.manual_id:
-        registry = load_manual_registry_from_env()
+        registry = load_manual_registry_from_db()
         try:
             manual = registry.get(args.manual_id)
         except KeyError as exc:

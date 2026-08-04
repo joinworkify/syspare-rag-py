@@ -88,5 +88,33 @@
     "image_dir": "manuals/EF725T_operation/cache/images",
     "ocr_lang": "eng",
     "description": ""
+  },
+  {
+    "manual_id": "js200_brochure",
+    "display_name": "JS200 Brochure Manual",
+    "pdf_folder": "manuals/js200_brochure/pdf",
+    "cache_dir": "manuals/js200_brochure/cache",
+    "image_dir": "manuals/js200_brochure/cache/images",
+    "ocr_lang": "eng",
+    "description": ""
+  },
+  {
+    "manual_id": "leeboy_1200s_manual",
+    "display_name": "LeeBoy 1200s Manual",
+    "pdf_folder": "manuals/leeboy_1200s_manual/pdf",
+    "cache_dir": "manuals/leeboy_1200s_manual/cache",
+    "image_dir": "manuals/leeboy_1200s_manual/cache/images",
+    "ocr_lang": "eng",
+    "description": ""
+  },
+  {
+    "manual_id": "js-200-brochure-xoec8r",
+    "display_name": "Test JS 200 (Demo Group)",
+    "pdf_folder": "manuals/js-200-brochure-xoec8r/pdf",
+    "cache_dir": "manuals/js-200-brochure-xoec8r/cache",
+    "image_dir": "manuals/js-200-brochure-xoec8r/cache/images",
+    "ocr_lang": "eng",
+    "description": "",
+    "organization_id": "58fb67ca-6286-42f3-8a63-f43aad478b8b"
   }
 ]

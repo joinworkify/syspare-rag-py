@@ -400,31 +400,6 @@ def upload_manual_pdf_file_to_s3(
     return True
 
 
-def upload_manual_registry_to_s3(local_path: str) -> bool:
-    """Upload manuals.json registry to S3. Returns True on success."""
-    if not is_s3_configured():
-        return False
-    path = Path(local_path)
-    if not path.is_file():
-        return False
-    key = f"{get_s3_prefix()}/manuals/manuals.json"
-    _get_client().upload_file(str(path), get_bucket_name(), key)
-    return True
-
-
-def download_manual_registry_from_s3(local_path: str) -> bool:
-    """Download manuals.json from S3 to local_path. Returns True if downloaded."""
-    if not is_s3_configured():
-        return False
-    key = f"{get_s3_prefix()}/manuals/manuals.json"
-    try:
-        Path(local_path).parent.mkdir(parents=True, exist_ok=True)
-        _get_client().download_file(get_bucket_name(), key, str(local_path))
-        return True
-    except Exception:
-        return False
-
-
 def delete_manual_from_s3(manual_id: str) -> int:
     """Delete all S3 objects under a manual's prefix. Returns number of objects deleted."""
     if not is_s3_configured():

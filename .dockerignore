@@ -1,0 +1,14 @@
+.git
+.env
+.env.local
+rag-service-account.json
+.venv
+__pycache__
+*.pyc
+manuals/
+web
+.specstory
+.vscode
+rag-viewer-tsx/node_modules
+rag-viewer-nextjs/node_modules
+rag-viewer-nextjs/.next

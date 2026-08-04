@@ -6,6 +6,26 @@ All JSON endpoints accept/return `application/json`. Image uploads use `multipar
 
 ---
 
+## Organizations (multi-tenancy)
+
+Every manual-touching endpoint below accepts an optional `organization_id` (JSON field, form
+field, or query param, matching however that endpoint already takes `manual_id`). It's fully
+optional and backward-compatible:
+
+- Omitting it (the default -- what every caller did before this field existed) gives you
+  exactly the old behavior: access to every **global** manual, nothing more.
+- A manual is **global** unless it was created with an `organization_id` (see
+  `POST /api/add-manual`), in which case it's **private** to that org -- invisible to
+  `GET /api/manuals` for anyone else, and any other `manual_id` referencing it returns `404`
+  for a mismatched or missing `organization_id`, indistinguishable from the manual not existing
+  at all.
+- There is no authentication on this backend -- it fully trusts whatever `organization_id` the
+  caller sends, the same way it already trusts `manual_id`. Real authorization (is this caller
+  actually allowed to act as this org?) is the calling application's job before it reaches this
+  API.
+
+---
+
 ## Health
 
 ### `GET /health`
@@ -34,6 +54,7 @@ Main RAG query. Retrieves relevant text + images from the manual and answers via
 |---|---|---|---|
 | `question` | string | required | |
 | `manual_id` | string | default manual | |
+| `organization_id` | string | none (global-only) | see "Organizations" above |
 | `top_k_text` | int | 5 | text chunks to retrieve |
 | `top_k_img` | int | 6 | images to retrieve |
 | `temp` | float | 0.5 | Gemini temperature |
@@ -76,7 +97,8 @@ Query with an optional reference image (base64).
 {
   "question": "What part is this?",
   "image_base64": "<base64 string>",
-  "manual_id": "YM358_service"
+  "manual_id": "YM358_service",
+  "organization_id": null
 }
 ```
 
@@ -84,6 +106,7 @@ Query with an optional reference image (base64).
 
 ### `POST /api/query-upload`
 Same as `query-with-image` but accepts `multipart/form-data` with an image file upload.
+Form fields include `manual_id` and `organization_id`, same meaning as the JSON field.
 
 ---
 
@@ -97,6 +120,7 @@ Structured diagnostic response for equipment issues. Returns `summary`, `confide
 {
   "question": "Engine makes knocking noise at startup",
   "manual_id": "YM358_service",
+  "organization_id": null,
   "top_k_text": 5,
   "top_k_img": 6,
   "temp": 0.2,
@@ -120,10 +144,15 @@ Structured diagnostic response for equipment issues. Returns `summary`, `confide
 
 ### `POST /api/v1/diagnose-upload`
 Same as `/api/v1/diagnose` but accepts a `multipart/form-data` image upload alongside the JSON payload.
+Form fields include `manual_id` and `organization_id`, same meaning as the JSON field.
 
 ---
 
 ## Cache Management
+
+Every endpoint in this section and the next (S3 Sync) also accepts an optional
+`organization_id` query param, same meaning as above -- included mainly for consistency, since
+these are curl/`make`-driven admin/ops tools rather than something end-user traffic calls.
 
 ### `POST /api/build-cache?manual_id=<id>`
 Rebuild metadata cache from PDFs. Slow (minutes). Does full extraction + Gemini + embeddings.
@@ -167,13 +196,16 @@ Upload a PDF to a manual's local folder and S3.
 **Form fields:**
 - `file` — PDF file
 - `manual_id` — (optional) target manual
+- `organization_id` — (optional) see "Organizations" above
 
 ---
 
 ## Manual Registry
 
-### `GET /api/manuals`
-List all registered manuals.
+### `GET /api/manuals?organization_id=<id>`
+List manuals visible to this caller: every global manual, plus (when `organization_id` is
+passed) that org's own private manuals. Omit `organization_id` for the global-only list (the
+pre-existing behavior).
 
 **Response:**
 ```json
@@ -189,6 +221,18 @@ List all registered manuals.
   ]
 }
 ```
+
+### `POST /api/add-manual`
+Register a new manual. `organization_id` unset (the default -- what the `/manage` admin UI
+uses) creates a **global** manual, same as every manual that predates this field. A real
+`organization_id` makes the new manual **private** to that org.
+
+**Form fields:** `manual_id`, `display_name`, `ocr_lang`, `description`, `organization_id`
+(all optional except `manual_id`), plus optional `files` (PDF uploads).
+
+### `POST /api/remove-manual?manual_id=<id>&organization_id=<id>`
+Remove a manual. `organization_id` must match the manual's own (or be omitted for a global
+manual) -- same 404-on-mismatch rule as every query endpoint.
 
 ---
 
@@ -206,11 +250,13 @@ List all registered manuals.
 
 ## Other
 
-### `GET /api/models`
+### `GET /api/models?manual_id=<id>&organization_id=<id>`
 List available Gemini models.
 
 ### `POST /api/generate-random-question`
-Generate a random test question from the manual context.
+Generate a random test question from the manual context. Body includes `manual_id` and
+`organization_id`, same meaning as `/api/query`.
 
 ### `POST /api/chat`
-Multi-turn chat interface using the RAG pipeline.
+Multi-turn chat interface using the RAG pipeline. Body includes `manual_id` and
+`organization_id`, same meaning as `/api/query`.

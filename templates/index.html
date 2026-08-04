@@ -128,6 +128,13 @@
               </div>
             </div>
           </div>
+          <div>
+            <label for="organization_id" class="block text-xs font-semibold text-slate-400 tracking-wider uppercase mb-2">Organization ID <span class="normal-case font-normal text-slate-600">(org-private manuals only)</span></label>
+            <input id="organization_id" name="organization_id" type="text"
+              value="{{ selected_organization_id|default('', true) }}"
+              placeholder="leave blank for global manuals"
+              class="w-full px-4 py-2.5 bg-slate-950 border border-slate-800 rounded-xl focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 outline-none transition text-slate-200 placeholder-slate-600 font-mono text-sm" />
+          </div>
 
           <div>
             <label for="answer_language" class="block text-xs font-semibold text-slate-400 tracking-wider uppercase mb-2">Answer Language</label>
@@ -338,9 +345,9 @@
         var btn = this;
         btn.disabled = true;
         btn.classList.add('opacity-50');
-        setStatus('Syncing manuals registry from S3…');
+        setStatus('Refreshing manuals registry…');
         try {
-          await fetch('/api/sync-registry-from-s3', { method: 'POST', headers: { 'Accept': 'application/json' } });
+          await fetch('/api/sync-registry', { method: 'POST', headers: { 'Accept': 'application/json' } });
           setStatus('Fetching manual list…');
           var r = await fetch('/api/manuals', { headers: { 'Accept': 'application/json' } });
           var data = await r.json();
