@@ -17,7 +17,10 @@ from __future__ import annotations
 import io
 import json
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from syspare_rag.usage import VertexUsageAccumulator
 
 from tqdm import tqdm
 
@@ -786,6 +789,7 @@ class MultimodalRAGPipeline:
         enable_dealer_fallback: bool = True,
         max_top_n_text: int = 40,
         max_top_n_images: int = 24,
+        usage_accumulator: Optional["VertexUsageAccumulator"] = None,
     ) -> Dict[str, Any]:
         lang_line = self._answer_language_line(answer_language)
         reasoning_line = (
@@ -813,6 +817,19 @@ class MultimodalRAGPipeline:
                     ]
                 )
 
+            if usage_accumulator is not None:
+                usage_accumulator.record_text_embeddings(query, calls=2)
+                image_context_chars = sum(
+                    len(str(value.get("image_description") or ""))
+                    for value in image_matches.values()
+                )
+                usage_accumulator.record_retrieved_context(
+                    len(final_context_text) + image_context_chars,
+                    expanded=(
+                        tnt > top_n_text or tni > top_n_images
+                    ),
+                )
+
             prompt = self._build_multimodal_prompt(
                 query=query,
                 final_context_text=final_context_text,
@@ -827,6 +844,12 @@ class MultimodalRAGPipeline:
                 model_input=[prompt],
                 stream=stream,
                 generation_config=GenerationConfig(temperature=temperature),
+                usage_accumulator=usage_accumulator,
+                usage_operation=(
+                    "answer_generation_expanded"
+                    if tnt > top_n_text or tni > top_n_images
+                    else "answer_generation"
+                ),
             )
             return text_matches, image_matches, prompt, response
 
@@ -878,30 +901,32 @@ class MultimodalRAGPipeline:
             else ""
         )
         return (
-            "You are a Yanmar tractor manual assistant. You can only answer from the currently selected manual and retrieved images.\n"
-            f"Selected manual/model context: {manual_label}.\n"
-            f"{available_line}"
-            "You are aware that this chat is scoped to a single manual at a time; you do not have access to other manuals unless the user switches to them.\n\n"
-            "Instructions:\n"
-            "1. Answer the user's question using only the Text Context and Image Context below.\n"
-            "2. Safety guidance should be relevant and proportional. Do not lead every routine answer with generic safety warnings. If the answer involves a severe or specific hazard (fuel vapor, fire, high pressure fluid, jacking/lifting, blades, electrical shock, or similar), keep the procedure safe and add a short final section titled 'Safety note:' with only the specific hazards that apply. For dangerous or high-risk repair work, advise a qualified technician or dealer instead of giving risky instructions.\n"
-            "3. If the user asks about a different tractor/machine model than the selected manual, do NOT reply that information is missing. Instead, explain this chat only covers the selected manual; if the model they want is in the available list above, ask them to switch the manual selector to it; otherwise say that model is currently unavailable.\n"
-            "4. Be practical and concise. Only give checks or steps that are actually supported by the context. Never invent or pad procedures just to avoid saying information is missing.\n"
-            "5. Format procedures as numbered steps when order matters. Use short bullet lists for unordered checks. Keep paragraphs short.\n"
-            f"6. If the context does not contain enough actionable information to genuinely help (and the question IS about the selected manual's machine), begin your reply with the token {INSUFFICIENT_CONTEXT_SENTINEL} on its own first line, then say what is missing and recommend contacting a local Yanmar dealer. Include only specific safety notes when relevant. Do NOT use this token for questions about other machine models (handle those per instruction 3).\n"
-            "7. CRITICAL CITATION RULE: When answering, if you use or reference information from a specific image to support your explanation, "
-            "you MUST cite it inline using the format [Image X] where X is the image index number (e.g. [Image 1], [Image 2]). "
-            "Always include these inline references if you rely on details or visual elements from the images.\n\n"
-            f"{lang_line}"
-            f"{reasoning_line}"
-            "Context:\n"
-            " - Text Context:\n"
-            f"{final_context_text}\n"
-            " - Image Context:\n"
-            f"{context_images}\n\n"
-            f"{query}\n\n"
-            "Answer:\n"
-        )
+           "You are a Yanmar machine manual assistant. You can only answer from the currently selected manual and retrieved images. \n"
+           f"Selected manual/model context: {manual_label}.\n"
+           f"{available_line}"
+           "You are aware that this chat is scoped to a single manual at a time; you do not have access to other manuals unless the user switches to them.\n\n"
+           "Instructions:\n"
+           "1. Answer the user's question using only the Text Context and Image Context below. Do NOT make up anything, especially things that may cause safety concerns.\n"
+           "2. If the user asks about a different tractor/machine model than the selected manual, do NOT reply that information is missing. Instead, explain this chat only covers the selected manual; if the model they want is in the available list above, ask them to switch the manual selector to it; otherwise say that model is currently unavailable.\n"
+           "3. Safety guidance should be relevant and proportional. Do not lead every routine answer with generic safety warnings. If the answer involves a severe or specific hazard (fuel vapor, fire, high pressure fluid, jacking/lifting, blades, electrical shock…etc), keep the procedure safe and add a short final section titled 'Safety note:' with only the specific hazards that apply. For dangerous or high-risk repair work, advise a qualified technician or dealer instead of giving risky instructions.\n"
+           "4. Be practical and concise. Only give checks or steps that are actually supported by the context. Never invent or pad procedures just to avoid saying information is missing.\n"
+           "5. Format procedures as numbered steps when order matters. Use short bullet lists for unordered checks. Keep paragraphs short.\n"
+           f"6. If the context does not contain enough actionable information to genuinely help (and the question IS about the selected manual's machine), begin your reply with the token {INSUFFICIENT_CONTEXT_SENTINEL} on its own first line, then say what is missing and recommend contacting a local Yanmar dealer. Include only specific safety notes when relevant. Do NOT use this token for questions about other machine models (handle those per instruction 2).\n"
+           "7. CRITICAL CITATION RULE: When answering, if you use or reference information from a specific image to support your explanation, "
+           "you MUST cite it inline using the format [Image X] where X is the image index number (e.g. [Image 1], [Image 2]). "
+           "Always include these inline references if you rely on details or visual elements from the images.\n\n"
+           f"{lang_line}"
+           f"{reasoning_line}"
+           "Context:\n"
+           " - Text Context:\n"
+           f"{final_context_text}\n"
+           " - Image Context:\n"
+           f"{context_images}\n\n"
+           f"{query}\n\n"
+           "Answer:\n"
+       )
+
+
 
     # -----------------------------
     # Structured diagnostic answer

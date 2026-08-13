@@ -39,7 +39,9 @@ from syspare_rag.config import (
     ManualNotFoundError,
     ManualRegistry,
     load_manual_registry_from_db,
+    load_manual_registry_from_env,
 )
+from syspare_rag.usage import VertexUsageAccumulator
 from utils import get_gemini_response, _print_progress
 
 load_dotenv()
@@ -110,6 +112,81 @@ MAX_CLASSIFY_TOKENS = 128      # yes/no classification
 MAX_QUESTION_TOKENS = 512      # single question generation
 TEMPERATURE = 0.2
 
+# Curated from human chat feedback. These hints are filtered per request before
+# being added to prompts, so the model sees only terms that are likely relevant.
+MYANMAR_TECHNICAL_GLOSSARY: List[Dict[str, Any]] = [
+    {
+        "aliases": ["ခရော်လာ", "ရာဘာချိန်း"],
+        "english": "crawler / rubber track",
+        "preferred_myanmar": "ရာဘာချိန်း or ခရော်လာ",
+        "english_triggers": ["crawler", "rubber track"],
+        "note": "Do not translate crawler literally as တွားသွားယာဉ်.",
+    },
+    {
+        "aliases": ["အိုးစည်"],
+        "english": "track roller / roller, track",
+        "preferred_myanmar": "အိုးစည်",
+        "english_triggers": ["track roller", "roller, track"],
+        "note": "In crawler/undercarriage questions, this means track roller, not threshing drum.",
+    },
+    {
+        "aliases": ["အဝိုင်းဆီး", "ဝိုင်းဆီး", "အွိုင်းဆီး", "ဆီး", "အဝိုင်းစီး", "ဝိုင်းစီး"],
+        "english": "oil seal",
+        "preferred_myanmar": "အိုင်းဆီး / Oil Seal",
+        "english_triggers": ["oil seal", "seal qlyf", "front axle gear case oil seal"],
+        "note": "For front wheel king pin wording, map to Front Axle Gear Case Oil Seal when context fits.",
+    },
+    {
+        "aliases": ["လည်ချောင်း"],
+        "english": "feeder house",
+        "preferred_myanmar": "လည်ချောင်း",
+        "english_triggers": ["feeder house"],
+        "note": "Combine harvester feeder section terminology.",
+    },
+    {
+        "aliases": ["လည်ချောင်းချိန်း"],
+        "english": "feeder chain",
+        "preferred_myanmar": "လည်ချောင်းချိန်း",
+        "english_triggers": ["feeder chain"],
+        "note": "Combine harvester feeder section terminology.",
+    },
+    {
+        "aliases": ["လည်ချောင်းဘွတ်"],
+        "english": "feeder house bush / bushing",
+        "preferred_myanmar": "လည်ချောင်းဘွတ်",
+        "english_triggers": ["feeder house bush", "feeder bushing", "bushing"],
+        "note": "Bush used in the feeder house context.",
+    },
+    {
+        "aliases": ["ရိတ်စက်"],
+        "english": "combine harvester / reaping-harvesting machine",
+        "preferred_myanmar": "ရိတ်သိမ်းခြွေလှေ့စက်",
+        "english_triggers": ["combine harvester", "harvester"],
+        "note": "In this product context, do not assume mower unless the user clearly says mower.",
+    },
+    {
+        "aliases": ["ရိုက်လုံး"],
+        "english": "threshing drum",
+        "preferred_myanmar": "ရိုက်လုံး",
+        "english_triggers": ["threshing drum"],
+        "note": "Terms like ရိုက်လုံး, ရိုက်တန်း, ခြွေလှေ့စကာ, ငါးမန်းစွယ်စကာ belong to the threshing section.",
+    },
+    {
+        "aliases": ["ရိုက်တန်း", "ခြွေလှေ့စကာ", "ငါးမန်းစွယ်စကာ"],
+        "english": "threshing section parts",
+        "preferred_myanmar": "ရိုက် / ခြွေလှေ့ပိုင်း terminology",
+        "english_triggers": ["threshing section", "threshing concave", "concave"],
+        "note": "Keep these terms associated with the threshing section.",
+    },
+    {
+        "aliases": ["pin kit, lock", "pin kit lock", "Pin Kit, Lock"],
+        "english": "Pin Kit, Lock",
+        "preferred_myanmar": "Pin Kit, Lock",
+        "english_triggers": ["pin kit, lock", "pin kit lock"],
+        "note": "Treat as the exact part name; do not reinterpret lock as differential lock.",
+    },
+]
+
 # Allow disabling S3 sync for local/dev (set DISABLE_S3_SYNC=1).
 DISABLE_S3_SYNC = _env("DISABLE_S3_SYNC", "0")
 INIT_RAG_ON_STARTUP = _env("INIT_RAG_ON_STARTUP", "0")
@@ -120,9 +197,13 @@ RETRIEVAL_EXPANDED_MESSAGE = (
     "First pass had insufficient detail, so retrieval was expanded before answering."
 )
 
-# Manual registry: list of available manuals + default selection, loaded from the
-# syspare_rag_manuals Postgres table (shared Supabase project with workify).
-manual_registry: ManualRegistry = load_manual_registry_from_db()
+# Manual registry: production uses the shared Postgres table. Tests and offline calibration can
+# explicitly opt into checked-in local manual configuration.
+manual_registry: ManualRegistry = (
+    load_manual_registry_from_env()
+    if _env("RAG_USE_LOCAL_MANUAL_REGISTRY", "0") == "1"
+    else load_manual_registry_from_db()
+)
 DEFAULT_MANUAL = manual_registry.default
 DEFAULT_MANUAL_ID = manual_registry.default_id
 
@@ -683,15 +764,58 @@ def _normalize_text_matches(
     return out
 
 
+def _format_relevant_myanmar_glossary_hints(
+    text: str,
+    *,
+    for_translation: bool = False,
+    max_entries: int = 5,
+) -> str:
+    """Return only feedback-derived terminology hints that match this text."""
+    haystack = (text or "").lower()
+    if not haystack:
+        return ""
+
+    lines: List[str] = []
+    for entry in MYANMAR_TECHNICAL_GLOSSARY:
+        aliases = [str(value) for value in entry.get("aliases", [])]
+        english_triggers = [str(value) for value in entry.get("english_triggers", [])]
+        needles = english_triggers if for_translation else [*aliases, *english_triggers]
+        if not any(needle and needle.lower() in haystack for needle in needles):
+            continue
+
+        line = (
+            f"- {', '.join(aliases)} => {entry['english']}; "
+            f"preferred Myanmar: {entry['preferred_myanmar']}."
+        )
+        note = str(entry.get("note") or "").strip()
+        if note:
+            line += f" {note}"
+        lines.append(line)
+        if len(lines) >= max_entries:
+            break
+
+    if not lines:
+        return ""
+    return (
+        "Relevant human-feedback terminology hints. Apply only when the current "
+        "context matches; ignore unrelated hints:\n"
+        + "\n".join(lines)
+    )
+
+
 def _rewrite_myanmar_to_english_query(
     rag: MultimodalRAGPipeline, myanmar_text: str
 ) -> str:
     """Rewrite Myanmar user text into English suited for manual embedding search."""
+    glossary_hints = _format_relevant_myanmar_glossary_hints(myanmar_text)
+    glossary_section = f"{glossary_hints}\n\n" if glossary_hints else ""
     instruction = (
         "Rewrite the following user question from Myanmar (Burmese) into a short, clear English search query "
         "suited for semantic search over a technical/service manual knowledge base. "
         "Preserve symptoms, part names, procedures, torque values, and numbers. "
+        "Use the terminology hints only when they match the user's wording. "
         "Output only the English query text, with no explanation, labels, or quotation marks.\n\n"
+        f"{glossary_section}"
         f"User question:\n{myanmar_text}\n\nEnglish query:"
     )
     out = get_gemini_response(
@@ -707,11 +831,18 @@ def _rewrite_myanmar_to_english_query(
 
 def _english_answer_to_myanmar(rag: MultimodalRAGPipeline, english_answer: str) -> str:
     """Translate/summarize the English RAG answer into Myanmar for the user."""
+    glossary_hints = _format_relevant_myanmar_glossary_hints(
+        english_answer,
+        for_translation=True,
+    )
+    glossary_section = f"{glossary_hints}\n\n" if glossary_hints else ""
     instruction = (
         "Translate the following English technical answer into natural Myanmar (Burmese). "
         "Preserve the full meaning; keep technical terms accurate (use common Roman abbreviations for parts where helpful). "
+        "Use the terminology hints only when they match the answer's machine context. "
         "IMPORTANT: Preserve any [Image X] citation markers (e.g., [Image 1], [Image 2]) EXACTLY as written — do not translate or remove them. "
         "Output only Myanmar (Burmese) script text with the preserved [Image X] markers, with no English preamble or labels.\n\n"
+        f"{glossary_section}"
         f"English answer:\n{english_answer}\n\nMyanmar answer:"
     )
     out = get_gemini_response(
@@ -824,6 +955,7 @@ def _run_english_core_multimodal_query(
     available_models: List[str],
 ) -> Dict[str, Any]:
     """Run retrieval/generation in English, translating only at the boundaries."""
+    usage = VertexUsageAccumulator(model_name=GEMINI_MODEL)
     source_language = _detect_supported_language(question)
     english_query = _rewrite_to_english_for_search(rag, question, source_language)
     if _is_generation_failure(english_query):
@@ -841,6 +973,7 @@ def _run_english_core_multimodal_query(
         answer_language="en",
         manual_label=manual_label,
         available_models=available_models,
+        usage_accumulator=usage,
     )
     text_matches = out["text_matches"]
     image_matches = out["image_matches"]
@@ -870,6 +1003,7 @@ def _run_english_core_multimodal_query(
         "text_matches": text_matches,
         "image_matches": image_matches,
         "retrieval_expanded": bool(out.get("retrieval_expanded")),
+        "usage": usage.to_dict(),
     }
 
 
@@ -909,6 +1043,7 @@ class QueryResponse(BaseModel):
     manual_id: Optional[str] = None
     retrieval_expanded: bool = False
     retrieval_message: Optional[str] = None
+    usage: Optional[Dict[str, Any]] = None
 
 
 class MyanmarQueryRequest(BaseModel):
@@ -1061,6 +1196,7 @@ class ChatResponse(BaseModel):
     images: List[ImageMatch]
     manual_id: Optional[str] = None
     retrieval_expanded: bool = False
+    usage: Optional[Dict[str, Any]] = None
 
 
 class ChatFeedbackRequest(BaseModel):
@@ -1452,6 +1588,7 @@ def api_query(payload: QueryRequest):
         manual_id=manual.manual_id,
         retrieval_expanded=retrieval_expanded,
         retrieval_message=RETRIEVAL_EXPANDED_MESSAGE if retrieval_expanded else None,
+        usage=out["usage"],
     )
 
 
@@ -2099,7 +2236,10 @@ def chat_page():
 
 
 def _condense_conversational_query(
-    rag, question: str, history: List[ChatMessage]
+    rag,
+    question: str,
+    history: List[ChatMessage],
+    usage_accumulator: Optional[VertexUsageAccumulator] = None,
 ) -> str:
     """Rewrite follow-up question to a standalone search query containing context."""
     if not history:
@@ -2116,11 +2256,17 @@ def _condense_conversational_query(
     for msg in history[-4:]:  # Limit to last 4 turns for speed/efficiency
         history_str += f"{msg.role.upper()}: {msg.content}\n"
 
+    glossary_hints = _format_relevant_myanmar_glossary_hints(
+        f"{history_str}\n{question}"
+    )
+    glossary_section = f"{glossary_hints}\n\n" if glossary_hints else ""
     instruction = (
         "Given the following conversation history and a follow-up question, "
         "rephrase the follow-up question into a short, standalone English search query "
         "that captures the exact context, machine parts, and troubleshooting intent. "
+        "Use the terminology hints only when they match the conversation. "
         "Output ONLY the standalone search query text, without explanations, markdown, or quotation marks.\n\n"
+        f"{glossary_section}"
         f"Chat History:\n{history_str}"
         f"Follow-up Question: {question}\n\n"
         "Standalone English Query:"
@@ -2133,6 +2279,8 @@ def _condense_conversational_query(
         generation_config=GenerationConfig(
             temperature=TEMPERATURE, max_output_tokens=MAX_QUERY_TOKENS
         ),
+        usage_accumulator=usage_accumulator,
+        usage_operation="query_condensation",
     )
     res = (out or question).strip()
     # Check if the condensed query still contains Japanese or Myanmar characters due to model following errors
@@ -2143,7 +2291,12 @@ def _condense_conversational_query(
     return res
 
 
-def _needs_retrieval(rag, condensed_query: str, history: List[ChatMessage]) -> bool:
+def _needs_retrieval(
+    rag,
+    condensed_query: str,
+    history: List[ChatMessage],
+    usage_accumulator: Optional[VertexUsageAccumulator] = None,
+) -> bool:
     """Return False when conversation history already contains enough context to answer."""
     if not history:
         return True
@@ -2166,6 +2319,8 @@ def _needs_retrieval(rag, condensed_query: str, history: List[ChatMessage]) -> b
         generation_config=GenerationConfig(
             temperature=0.0, max_output_tokens=MAX_CLASSIFY_TOKENS
         ),
+        usage_accumulator=usage_accumulator,
+        usage_operation="retrieval_decision",
     )
     return "yes" in (out or "yes").strip().lower()
 
@@ -2530,20 +2685,30 @@ def api_chat(payload: ChatRequest, request: Request):
         return JSONResponse({"detail": f"RAG not ready: {e}"}, status_code=503)
 
     session_id = payload.session_id or str(uuid.uuid4())
+    usage = VertexUsageAccumulator(model_name=GEMINI_MODEL)
 
     # 1. Condense/Rewrite follow-up query using history
     search_query = _condense_conversational_query(
-        rag, payload.question, payload.history
+        rag, payload.question, payload.history, usage
     )
 
     # 2. Retrieve only when history doesn't already cover the question.
     # _run_chat_pass owns retrieval so the decision and vector searches happen once.
-    needs_retrieval = _needs_retrieval(rag, search_query, payload.history)
+    needs_retrieval = _needs_retrieval(rag, search_query, payload.history, usage)
 
     history_str = ""
     for msg in payload.history:
         role_label = "Farmer" if msg.role == "user" else "Tractor Assistant"
         history_str += f"{role_label}: {msg.content}\n"
+
+    glossary_hints = _format_relevant_myanmar_glossary_hints(
+        f"{history_str}\n{payload.question}"
+    )
+    glossary_section = (
+        f"Feedback-derived terminology hints:\n{glossary_hints}\n\n"
+        if glossary_hints
+        else ""
+    )
 
     target_language = _normalize_target_answer_language(
         payload.question, payload.answer_language
@@ -2564,6 +2729,7 @@ def api_chat(payload: ChatRequest, request: Request):
         if needs_retrieval:
             tm = rag.search_text(search_query, top_n=tk_text, chunk_text=True)
             im = rag.search_images_by_description_text(search_query, top_n=tk_img)
+            usage.record_text_embeddings(search_query, calls=2)
         else:
             tm, im = {}, {}
 
@@ -2575,6 +2741,14 @@ def api_chat(payload: ChatRequest, request: Request):
         for idx, img in enumerate(im.values()):
             caption = img.get("image_description") or img.get("img_desc") or ""
             context_images_str += f"Image {idx+1}:\nCaption: {caption}\n\n"
+
+        if needs_retrieval:
+            usage.record_retrieved_context(
+                len(context_str) + len(context_images_str),
+                expanded=(
+                    tk_text > payload.top_k_text or tk_img > payload.top_k_img
+                ),
+            )
 
         system_prompt = (
             "You are an empathetic, expert tractor technician and farmer's advisor.\n"
@@ -2593,6 +2767,7 @@ def api_chat(payload: ChatRequest, request: Request):
             "8. CRITICAL MANUAL CLIP CITATION RULE: Do NOT EVER cite, print, or reference any '[Manual Clip X]' or 'Manual Clip' indexes/tags. Speak naturally, using the clip text silently as background knowledge.\n"
             f"9. INSUFFICIENT INFO: If the manual clips do not contain enough actionable information to genuinely help (and the question IS about the selected machine), begin your reply with the token {INSUFFICIENT_CONTEXT_SENTINEL} on its own first line, then say what is missing and advise contacting a local dealer. Include only specific safety notes when relevant. Do NOT use this token for questions about other machine models (handle those per guideline 4).\n"
             f"10. LANGUAGE RULE: {lang_instruction}\n\n"
+            f"{glossary_section}"
             f"Operation Manual Clips:\n{context_str}\n"
             f"Retrieved Images Context:\n{context_images_str}\n"
             f"Conversation History:\n{history_str}"
@@ -2606,6 +2781,12 @@ def api_chat(payload: ChatRequest, request: Request):
             stream=False,
             generation_config=GenerationConfig(
                 temperature=payload.temp, max_output_tokens=MAX_OUTPUT_TOKENS
+            ),
+            usage_accumulator=usage,
+            usage_operation=(
+                "answer_generation_expanded"
+                if tk_text > payload.top_k_text or tk_img > payload.top_k_img
+                else "answer_generation"
             ),
         )
         return tm, im, (out or "").strip()
@@ -2680,6 +2861,7 @@ def api_chat(payload: ChatRequest, request: Request):
         images=[ImageMatch(**img) for img in images_norm],
         manual_id=manual.manual_id,
         retrieval_expanded=retrieval_expanded,
+        usage=usage.to_dict(),
     )
 
 

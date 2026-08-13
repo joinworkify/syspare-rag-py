@@ -3,7 +3,10 @@ import os
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
+from typing import Any, Dict, Iterable, List, Optional, Tuple, Union, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from syspare_rag.usage import VertexUsageAccumulator
 
 # Concurrent page workers during cache build. Tune with RAG_BUILD_WORKERS env var.
 # Keep ≤5 to stay within Vertex AI default QPM quotas.
@@ -474,6 +477,8 @@ def get_gemini_response(
         HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
         HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
     },
+    usage_accumulator: Optional["VertexUsageAccumulator"] = None,
+    usage_operation: str = "generation",
 ) -> str:
     """
     Generate a Gemini response for the given model_input.
@@ -503,6 +508,8 @@ def get_gemini_response(
     #  Non-streaming: response is a single GenerationResponse (not iterable)
     if not stream:
         try:
+            if usage_accumulator is not None:
+                usage_accumulator.record_generation(response, usage_operation)
             return (getattr(response, "text", None) or "").strip()
         except Exception as e:
             print(
